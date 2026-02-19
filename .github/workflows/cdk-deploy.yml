@@ -1,0 +1,79 @@
+name: CDK Deploy
+
+on:
+  workflow_call:
+    inputs:
+      aws-region:
+        description: AWS region to deploy to
+        type: string
+        default: "us-east-1"
+      cdk-version:
+        description: CDK CLI npm version to install
+        type: string
+        default: "2.1106.1"
+      smoke-test-url:
+        description: URL to curl after deploy for smoke test (optional)
+        type: string
+        default: ""
+    secrets:
+      aws-role-arn:
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup CDK
+        uses: Specter099/.github/.github/actions/setup-cdk@main
+        with:
+          cdk-version: ${{ inputs.cdk-version }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: CDK Deploy
+        run: cdk deploy --require-approval never --outputs-file outputs.json
+
+      - name: Upload stack outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stack-outputs
+          path: outputs.json
+          if-no-files-found: ignore
+
+      - name: Write outputs to job summary
+        if: always()
+        run: |
+          if [ -f outputs.json ]; then
+            echo "## Stack Outputs" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat outputs.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No stack outputs file found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Smoke test
+        if: ${{ inputs.smoke-test-url != '' }}
+        run: |
+          status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 \
+            "${{ inputs.smoke-test-url }}" || echo "000")
+          echo "Smoke test HTTP status: $status"
+          echo "## Smoke Test" >> "$GITHUB_STEP_SUMMARY"
+          echo "Response from \`${{ inputs.smoke-test-url }}\`: **HTTP $status**" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$status" == "000" ]]; then
+            echo "::warning::Smoke test: curl failed or timed out"
+          else
+            echo "Smoke test passed — endpoint is reachable."
+          fi
