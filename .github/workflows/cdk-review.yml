@@ -1,0 +1,103 @@
+name: CDK Review
+
+on:
+  workflow_call:
+    inputs:
+      aws-region:
+        description: AWS region to deploy to
+        type: string
+        default: "us-east-1"
+      cdk-version:
+        description: CDK CLI npm version to install
+        type: string
+        default: "2.1106.1"
+      smoke-test-url:
+        description: URL to curl after deploy (optional)
+        type: string
+        default: ""
+    secrets:
+      aws-role-arn:
+        required: true
+
+jobs:
+  review:
+    name: Synth & Diff
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup CDK
+        uses: Specter099/.github/.github/actions/setup-cdk@main
+        with:
+          cdk-version: ${{ inputs.cdk-version }}
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Unit tests
+        run: pytest tests/ -v
+
+      - name: Dependency audit
+        run: pip-audit -r requirements.txt
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: CDK Synth
+        run: cdk synth
+
+      - name: CDK Nag (informational)
+        run: CDK_NAG=true cdk synth 2>&1 | grep -E "^\[.*Nag\]|AwsSolutions" || true
+
+      - name: CDK Diff
+        id: diff
+        run: |
+          diff_output=$(cdk diff 2>&1) || true
+          echo "$diff_output"
+          {
+            echo "diff<<EOF"
+            echo "$diff_output"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment diff on PR
+        uses: actions/github-script@v7
+        env:
+          DIFF: ${{ steps.diff.outputs.diff }}
+        with:
+          script: |
+            const diff = process.env.DIFF;
+            const body = `### CDK Diff\n\n\`\`\`\n${diff}\n\`\`\``;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.startsWith('### CDK Diff')
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
