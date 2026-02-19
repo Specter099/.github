@@ -15,10 +15,6 @@ on:
         description: URL to curl after deploy (optional)
         type: string
         default: ""
-    secrets:
-      AWS_ROLE_ARN:
-        required: true
-
 jobs:
   review:
     name: Synth & Diff

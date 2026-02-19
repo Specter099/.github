@@ -15,10 +15,6 @@ on:
         description: URL to curl after deploy for smoke test (optional)
         type: string
         default: ""
-    secrets:
-      AWS_ROLE_ARN:
-        required: true
-
 jobs:
   deploy:
     name: Deploy
