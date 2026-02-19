@@ -23,6 +23,10 @@ on:
         description: Unused in review — accepted for interface consistency with deploy workflow
         type: string
         default: ""
+      skip-frontend-tests:
+        description: Set to true to skip the frontend test step (for repos without tests configured)
+        type: boolean
+        default: false
 
 jobs:
   review:
@@ -48,6 +52,7 @@ jobs:
         run: npm run lint --prefix ${{ inputs.frontend-dir }}
 
       - name: Test frontend (Vitest)
+        if: ${{ !inputs.skip-frontend-tests }}
         run: npm run test --prefix ${{ inputs.frontend-dir }}
 
       - name: Install infra dev dependencies
