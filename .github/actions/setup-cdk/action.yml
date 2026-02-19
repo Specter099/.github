@@ -6,6 +6,10 @@ inputs:
     description: CDK CLI version to install
     required: false
     default: "2.1106.1"
+  requirements-path:
+    description: Path to requirements.txt relative to repo root
+    required: false
+    default: "requirements.txt"
 
 runs:
   using: composite
@@ -31,4 +35,4 @@ runs:
 
     - name: Install Python dependencies
       shell: bash
-      run: pip install -r requirements.txt
+      run: pip install -r ${{ inputs.requirements-path }}
