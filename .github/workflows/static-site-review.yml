@@ -55,6 +55,9 @@ jobs:
         if: ${{ !inputs.skip-frontend-tests }}
         run: npm run test --prefix ${{ inputs.frontend-dir }}
 
+      - name: Build frontend
+        run: npm run build --prefix ${{ inputs.frontend-dir }}
+
       - name: Install infra dev dependencies
         run: pip install -r ${{ inputs.infra-dir }}/requirements-dev.txt
 
