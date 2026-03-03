@@ -43,7 +43,7 @@ jobs:
       - name: Upload to S3
         run: |
           aws s3 cp "${{ steps.vars.outputs.filename }}" \
-            "s3://github-repo-backup-1b114b0d7fd4/${{ steps.vars.outputs.s3-key }}"
+            "s3://${{ vars.BACKUP_S3_BUCKET }}/${{ steps.vars.outputs.s3-key }}"
 
       - name: Write job summary
         run: |
@@ -54,4 +54,4 @@ jobs:
           echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Archive | \`${{ steps.vars.outputs.filename }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Size | $ARCHIVE_SIZE |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| S3 URI | \`s3://github-repo-backup-1b114b0d7fd4/${{ steps.vars.outputs.s3-key }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| S3 URI | \`s3://${{ vars.BACKUP_S3_BUCKET }}/${{ steps.vars.outputs.s3-key }}\` |" >> "$GITHUB_STEP_SUMMARY"
