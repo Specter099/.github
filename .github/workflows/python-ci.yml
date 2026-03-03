@@ -1,4 +1,5 @@
 name: Python CI
+# Requires callers to include ruff and pytest in their requirements file (requirements-path input).
 
 on:
   workflow_call:
@@ -26,12 +27,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # full history required by gitleaks
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version }}
+
+      - name: Upgrade pip
+        run: pip install --upgrade pip
 
       - name: Install dev dependencies
         run: pip install -r ${{ inputs.requirements-path }}
