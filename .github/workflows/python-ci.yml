@@ -1,0 +1,55 @@
+name: Python CI
+# Requires callers to include ruff and pytest in their requirements file (requirements-path input).
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version to use
+        type: string
+        default: "3.12"
+      requirements-path:
+        description: Path to dev requirements file
+        type: string
+        default: "requirements-dev.txt"
+      tests-dir:
+        description: Directory to run pytest against
+        type: string
+        default: "tests/"
+
+jobs:
+  ci:
+    name: Lint, Secrets & Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history required by gitleaks
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Upgrade pip
+        run: pip install --upgrade pip
+
+      - name: Install dev dependencies
+        run: pip install -r ${{ inputs.requirements-path }}
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Secrets scan (gitleaks)
+        uses: zricethezav/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Unit tests (pytest)
+        run: pytest ${{ inputs.tests-dir }} -v
