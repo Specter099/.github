@@ -16,6 +16,12 @@ on:
         type: string
         default: ""
 jobs:
+  gitleaks:
+    name: Secret Scan
+    uses: Specter099/.github/.github/workflows/gitleaks.yml@main
+    permissions:
+      contents: read
+
   review:
     name: Synth & Diff
     runs-on: ubuntu-latest
