@@ -1,28 +1,48 @@
 name: Python CI
-# Requires callers to include ruff and pytest in their requirements file (requirements-path input).
+# Requires callers to include ruff and pytest in their requirements file.
+# Install via requirements-path (default) or override with install-command.
 
 on:
   workflow_call:
     inputs:
-      python-version:
-        description: Python version to use
+      python-versions:
+        description: JSON array of Python versions for matrix (e.g. '["3.11","3.12"]')
         type: string
-        default: "3.12"
+        default: '["3.12"]'
       requirements-path:
-        description: Path to dev requirements file
+        description: Path to dev requirements file (ignored if install-command is set)
         type: string
         default: "requirements-dev.txt"
+      install-command:
+        description: Custom install command (overrides requirements-path)
+        type: string
+        default: ""
       tests-dir:
         description: Directory to run pytest against
         type: string
         default: "tests/"
+      coverage:
+        description: Enable pytest-cov coverage reporting
+        type: boolean
+        default: false
+      coverage-threshold:
+        description: Minimum coverage percentage (only used when coverage is true)
+        type: number
+        default: 80
+      pip-audit:
+        description: Run pip-audit dependency vulnerability scan
+        type: boolean
+        default: false
 
 jobs:
   ci:
-    name: Lint, Secrets & Test
+    name: "Lint, Secrets & Test (py${{ matrix.python-version }})"
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      matrix:
+        python-version: ${{ fromJson(inputs.python-versions) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -32,13 +52,18 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ inputs.python-version }}
+          python-version: ${{ matrix.python-version }}
 
       - name: Upgrade pip
         run: pip install --upgrade pip
 
       - name: Install dev dependencies
-        run: pip install -r ${{ inputs.requirements-path }}
+        run: |
+          if [ -n "${{ inputs.install-command }}" ]; then
+            ${{ inputs.install-command }}
+          else
+            pip install -r ${{ inputs.requirements-path }}
+          fi
 
       - name: Lint (ruff)
         run: ruff check .
@@ -51,5 +76,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Dependency audit (pip-audit)
+        if: ${{ inputs.pip-audit }}
+        run: |
+          pip install pip-audit
+          pip-audit
+
       - name: Unit tests (pytest)
+        if: ${{ !inputs.coverage }}
         run: pytest ${{ inputs.tests-dir }} -v
+
+      - name: Unit tests with coverage (pytest-cov)
+        if: ${{ inputs.coverage }}
+        run: |
+          pip install pytest-cov
+          pytest ${{ inputs.tests-dir }} -v --cov --cov-report=term-missing --cov-fail-under=${{ inputs.coverage-threshold }}
