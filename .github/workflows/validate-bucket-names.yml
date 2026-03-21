@@ -1,0 +1,71 @@
+name: Validate S3 Bucket Names
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version to use
+        type: string
+        default: "3.12"
+      scan-path:
+        description: Directory to scan for bucket names
+        type: string
+        default: "."
+
+jobs:
+  validate-bucket-names:
+    name: S3 Bucket Naming Convention
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout caller repo
+        uses: actions/checkout@v4
+
+      - name: Checkout .github repo (for shared scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: Specter099/.github
+          path: .shared-github
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Validate S3 bucket names
+        id: validate
+        run: python .shared-github/scripts/validate_bucket_names.py --path ${{ inputs.scan-path }}
+
+      - name: Comment on PR (violations only)
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `### S3 Bucket Naming Violations
+
+            One or more S3 \`bucket_name=\` values in this PR do not conform
+            to the required convention:
+
+            \`\`\`
+            {prefix}-{12-digit-account-id}-{aws-region}-an
+            \`\`\`
+
+            **Example:** \`bitwarden-logs-123456789012-us-east-1-an\`
+
+            Run the script locally to see exactly which files and lines need
+            to be updated:
+
+            \`\`\`bash
+            python scripts/validate_bucket_names.py --path .
+            \`\`\`
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
