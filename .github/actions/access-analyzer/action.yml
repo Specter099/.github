@@ -62,7 +62,9 @@ runs:
             "AWS::KMS::Key":                       ("KeyPolicy",                "AWS::KMS::Key"),
             "AWS::ECR::Repository":                ("RepositoryPolicyText",     "AWS::ECR::Repository"),
             "AWS::SecretsManager::ResourcePolicy": ("ResourcePolicy",           "AWS::SecretsManager::Secret"),
-            "AWS::IAM::Role":                      ("AssumeRolePolicyDocument", "AWS::IAM::AssumeRolePolicyDocument"),
+            # AWS::IAM::Role excluded: CDK trust policies contain intrinsic functions
+            # (Fn::Sub, Ref, Fn::If) that CheckNoPublicAccess cannot evaluate, producing
+            # misleading errors. OIDC trust policies also trigger false positives.
         }
 
         template_dir      = Path(os.environ["TEMPLATE_DIR"])
