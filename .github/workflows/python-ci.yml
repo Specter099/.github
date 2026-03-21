@@ -1,16 +1,21 @@
+---
 name: Python CI
 # Requires callers to include ruff and pytest in their requirements file.
 # Install via requirements-path (default) or override with install-command.
 
-on:
+"on":
   workflow_call:
     inputs:
       python-versions:
-        description: JSON array of Python versions for matrix (e.g. '["3.11","3.12"]')
+        description: >-
+          JSON array of Python versions for matrix
+          (e.g. '["3.11","3.12"]')
         type: string
         default: '["3.12"]'
       requirements-path:
-        description: Path to dev requirements file (ignored if install-command is set)
+        description: >-
+          Path to dev requirements file
+          (ignored if install-command is set)
         type: string
         default: "requirements-dev.txt"
       install-command:
@@ -26,11 +31,17 @@ on:
         type: boolean
         default: false
       coverage-threshold:
-        description: Minimum coverage percentage (only used when coverage is true)
+        description: >-
+          Minimum coverage percentage
+          (only used when coverage is true)
         type: number
         default: 80
       pip-audit:
         description: Run pip-audit dependency vulnerability scan
+        type: boolean
+        default: false
+      bandit:
+        description: Run bandit SAST scan (medium+ severity)
         type: boolean
         default: false
 
@@ -82,6 +93,12 @@ jobs:
           pip install pip-audit
           pip-audit
 
+      - name: SAST scan (bandit)
+        if: ${{ inputs.bandit }}
+        run: |
+          pip install bandit
+          bandit -r . -ll --exclude .venv,cdk.out
+
       - name: Unit tests (pytest)
         if: ${{ !inputs.coverage }}
         run: pytest ${{ inputs.tests-dir }} -v
@@ -90,4 +107,7 @@ jobs:
         if: ${{ inputs.coverage }}
         run: |
           pip install pytest-cov
-          pytest ${{ inputs.tests-dir }} -v --cov --cov-report=term-missing --cov-fail-under=${{ inputs.coverage-threshold }}
+          pytest ${{ inputs.tests-dir }} -v \
+            --cov \
+            --cov-report=term-missing \
+            --cov-fail-under=${{ inputs.coverage-threshold }}
