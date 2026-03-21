@@ -11,6 +11,13 @@ on:
         description: Directory containing CloudFormation *.template.json files (e.g. cdk.out)
         type: string
         default: cdk.out
+      yaml-template-dir:
+        description: >-
+          Directory containing CloudFormation *.yaml/*.yml templates to scan.
+          Templates are converted to JSON via cfn-flip before scanning.
+          Leave empty to skip YAML conversion (default).
+        type: string
+        default: ""
       fail-on-public-access:
         description: Fail the job when public access is detected (set false for warn-only)
         type: boolean
@@ -44,12 +51,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install boto3
-        run: pip install --quiet boto3
+      - name: Install dependencies
+        run: pip install --quiet --upgrade boto3 cfn-flip
+
+      - name: Convert CloudFormation YAML templates to JSON
+        if: inputs.yaml-template-dir != ''
+        env:
+          YAML_DIR: ${{ inputs.yaml-template-dir }}
+        run: |
+          mkdir -p cfn-yaml-out
+          find "$YAML_DIR" -maxdepth 1 \( -name "*.yaml" -o -name "*.yml" \) | while read -r f; do
+            out="cfn-yaml-out/$(basename "${f%.*}").template.json"
+            cfn-flip "$f" "$out" && echo "Converted: $f -> $out"
+          done
 
       - name: Check no public access
         env:
           TEMPLATE_DIR: ${{ inputs.template-dir }}
+          YAML_TEMPLATE_DIR: ${{ inputs.yaml-template-dir != '' && 'cfn-yaml-out' || '' }}
           FAIL_ON_PUBLIC_ACCESS: ${{ inputs.fail-on-public-access }}
           AWS_REGION: ${{ inputs.aws-region }}
         run: |
@@ -73,10 +92,11 @@ jobs:
               "AWS::IAM::Role":                      ("AssumeRolePolicyDocument", "AWS::IAM::AssumeRolePolicyDocument"),
           }
 
-          template_dir   = Path(os.environ["TEMPLATE_DIR"])
-          fail_on_public = os.environ["FAIL_ON_PUBLIC_ACCESS"].lower() == "true"
-          aws_region     = os.environ.get("AWS_REGION", "us-east-1")
-          summary_path   = os.environ.get("GITHUB_STEP_SUMMARY")
+          template_dir      = Path(os.environ["TEMPLATE_DIR"])
+          yaml_template_dir = os.environ.get("YAML_TEMPLATE_DIR", "")
+          fail_on_public    = os.environ["FAIL_ON_PUBLIC_ACCESS"].lower() == "true"
+          aws_region        = os.environ.get("AWS_REGION", "us-east-1")
+          summary_path      = os.environ.get("GITHUB_STEP_SUMMARY")
 
           def find_templates(d):
               skip = {"manifest.json", "tree.json"}
@@ -117,11 +137,17 @@ jobs:
               if not summary_path:
                   return
               with open(summary_path, "a") as f:
-                  f.write(f"\n### Access Analyzer - `{template_name}`\n\n")
+                  f.write(f"
+### Access Analyzer - `{template_name}`
+
+")
                   if not findings:
-                      f.write("_No applicable resources found._\n")
+                      f.write("_No applicable resources found._
+")
                       return
-                  f.write("| Resource | Type | Result |\n|---|---|---|\n")
+                  f.write("| Resource | Type | Result |
+|---|---|---|
+")
                   for r in findings:
                       if "error" in r:
                           icon, status = "warning", f"Error: {r['error']}"
@@ -130,50 +156,53 @@ jobs:
                           icon, status = "x", f"FAIL - {reasons}"
                       else:
                           icon, status = "check", "PASS"
-                      f.write(f"| `{r['logical_id']}` | `{r['resource_type']}` | :{icon}: {status} |\n")
+                      f.write(f"| `{r['logical_id']}` | `{r['resource_type']}` | :{icon}: {status} |
+")
+
+          def scan_dir(client, d, total_violations):
+              if not d.is_dir():
+                  return total_violations
+              templates = find_templates(d)
+              if not templates:
+                  print(f"::notice::No *.template.json files found in '{d}' - skipping")
+                  return total_violations
+              for tpl_path in templates:
+                  name = tpl_path.name
+                  print(f"
+=== {name} ===")
+                  try:
+                      template = json.loads(tpl_path.read_text())
+                  except json.JSONDecodeError as exc:
+                      print(f"::warning::Could not parse {name}: {exc}")
+                      continue
+                  policies = extract_policies(template)
+                  if not policies:
+                      print("  No applicable resources found - skipping")
+                      append_summary([], name)
+                      continue
+                  findings = []
+                  for lid, analyzer_type, policy_doc in policies:
+                      result = check_policy(client, lid, analyzer_type, policy_doc)
+                      findings.append(result)
+                      if "error" in result:
+                          print(f"  [!] {lid} ({analyzer_type}) - error: {result['error']}")
+                      elif result["public"]:
+                          total_violations += 1
+                          reasons = "; ".join(result["reasons"]) if result["reasons"] else "public access detected"
+                          print(f"  [x] {lid} ({analyzer_type}) - FAIL: {reasons}")
+                      else:
+                          print(f"  [ok] {lid} ({analyzer_type}) - PASS")
+                  append_summary(findings, name)
+              return total_violations
 
           # -- main --------------------------------------------------------------
-
-          if not template_dir.is_dir():
-              print(f"::error::template-dir '{template_dir}' does not exist or is not a directory")
-              sys.exit(1)
-
-          templates = find_templates(template_dir)
-          if not templates:
-              print(f"::notice::No *.template.json files found in '{template_dir}' - skipping check")
-              sys.exit(0)
 
           client           = boto3.client("accessanalyzer", region_name=aws_region)
           total_violations = 0
 
-          for tpl_path in templates:
-              name = tpl_path.name
-              print(f"\n=== {name} ===")
-              try:
-                  template = json.loads(tpl_path.read_text())
-              except json.JSONDecodeError as exc:
-                  print(f"::warning::Could not parse {name}: {exc}")
-                  continue
-
-              policies = extract_policies(template)
-              if not policies:
-                  print("  No applicable resources found - skipping")
-                  append_summary([], name)
-                  continue
-
-              findings = []
-              for lid, analyzer_type, policy_doc in policies:
-                  result = check_policy(client, lid, analyzer_type, policy_doc)
-                  findings.append(result)
-                  if "error" in result:
-                      print(f"  [!] {lid} ({analyzer_type}) - error: {result['error']}")
-                  elif result["public"]:
-                      total_violations += 1
-                      reasons = "; ".join(result["reasons"]) if result["reasons"] else "public access detected"
-                      print(f"  [x] {lid} ({analyzer_type}) - FAIL: {reasons}")
-                  else:
-                      print(f"  [ok] {lid} ({analyzer_type}) - PASS")
-              append_summary(findings, name)
+          total_violations = scan_dir(client, template_dir, total_violations)
+          if yaml_template_dir:
+              total_violations = scan_dir(client, Path(yaml_template_dir), total_violations)
 
           print()
           if total_violations > 0:
@@ -182,3 +211,7 @@ jobs:
           else:
               print("All resources passed the no-public-access check.")
           PYEOF
+
+      - name: Notify on public access detected
+        if: failure()
+        run: echo "::error::IAM Access Analyzer detected resources that grant public access. Review the job output for details."
