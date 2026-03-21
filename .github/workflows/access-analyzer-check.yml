@@ -22,10 +22,12 @@ on:
         description: Fail the job when public access is detected (set false for warn-only)
         type: boolean
         default: true
-    secrets:
-      AWS_ROLE_ARN:
-        description: IAM role ARN to assume via OIDC (must allow access-analyzer:CheckNoPublicAccess)
-        required: true
+      environment:
+        description: >-
+          GitHub environment to deploy into. The environment must have an AWS_ROLE_ARN
+          secret set to the IAM role ARN to assume via OIDC.
+        type: string
+        default: production
 
 permissions:
   id-token: write  # OIDC token for AWS authentication
@@ -35,6 +37,7 @@ jobs:
   check-no-public-access:
     name: Check No Public Access
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout
