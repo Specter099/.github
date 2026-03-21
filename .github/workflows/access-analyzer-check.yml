@@ -140,17 +140,11 @@ jobs:
               if not summary_path:
                   return
               with open(summary_path, "a") as f:
-                  f.write(f"
-### Access Analyzer - `{template_name}`
-
-")
+                  f.write(f"\n### Access Analyzer - `{template_name}`\n\n")
                   if not findings:
-                      f.write("_No applicable resources found._
-")
+                      f.write("_No applicable resources found._\n")
                       return
-                  f.write("| Resource | Type | Result |
-|---|---|---|
-")
+                  f.write("| Resource | Type | Result |\n|---|---|---|\n")
                   for r in findings:
                       if "error" in r:
                           icon, status = "warning", f"Error: {r['error']}"
@@ -159,8 +153,7 @@ jobs:
                           icon, status = "x", f"FAIL - {reasons}"
                       else:
                           icon, status = "check", "PASS"
-                      f.write(f"| `{r['logical_id']}` | `{r['resource_type']}` | :{icon}: {status} |
-")
+                      f.write(f"| `{r['logical_id']}` | `{r['resource_type']}` | :{icon}: {status} |\n")
 
           def scan_dir(client, d, total_violations):
               if not d.is_dir():
@@ -171,8 +164,7 @@ jobs:
                   return total_violations
               for tpl_path in templates:
                   name = tpl_path.name
-                  print(f"
-=== {name} ===")
+                  print(f"\n=== {name} ===")
                   try:
                       template = json.loads(tpl_path.read_text())
                   except json.JSONDecodeError as exc:
