@@ -1,6 +1,7 @@
+---
 name: CDK Review
 
-on:
+"on":
   workflow_call:
     inputs:
       aws-region:
@@ -17,7 +18,9 @@ on:
         default: ""
     secrets:
       AWS_ROLE_ARN:
-        description: IAM role ARN for OIDC federation (optional — skips synth/diff if absent)
+        description: >-
+          IAM role ARN for OIDC federation
+          (optional — skips synth/diff if absent)
         required: false
 jobs:
   gitleaks:
@@ -87,9 +90,22 @@ jobs:
         if: secrets.AWS_ROLE_ARN != ''
         run: cdk synth
 
+      - name: SAST scan (bandit)
+        run: |
+          pip install bandit
+          bandit -r . -ll --exclude .venv,cdk.out
+
+      - name: IaC scan (checkov)
+        run: |
+          pip install checkov
+          checkov -d cdk.out --framework cloudformation \
+            --quiet --compact
+
       - name: CDK Nag (informational)
         if: secrets.AWS_ROLE_ARN != ''
-        run: CDK_NAG=true cdk synth 2>&1 | grep -E "^\[.*Nag\]|AwsSolutions" || true
+        run: >-
+          CDK_NAG=true cdk synth 2>&1
+          | grep -E "^\[.*Nag\]|AwsSolutions" || true
 
       - name: CDK Diff
         if: secrets.AWS_ROLE_ARN != ''
