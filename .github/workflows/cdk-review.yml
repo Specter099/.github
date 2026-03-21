@@ -45,8 +45,10 @@ jobs:
         with:
           cdk-version: ${{ inputs.cdk-version }}
 
-      - name: Install dev dependencies
-        run: pip install -r requirements-dev.txt
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          [ -f requirements-dev.txt ] && pip install -r requirements-dev.txt || true
 
       - name: Lint (ruff)
         if: hashFiles('requirements-dev.txt') != '' && success()
