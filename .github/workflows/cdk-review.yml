@@ -37,6 +37,8 @@ jobs:
       id-token: write
       contents: read
       pull-requests: write
+    env:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -82,14 +84,14 @@ jobs:
           fi
 
       - name: Configure AWS credentials
-        if: secrets.AWS_ROLE_ARN != ''
+        if: env.AWS_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: CDK Synth
-        if: secrets.AWS_ROLE_ARN != ''
+        if: env.AWS_ROLE_ARN != ''
         run: cdk synth
 
       - name: SAST scan (bandit)
@@ -104,13 +106,13 @@ jobs:
             --quiet --compact
 
       - name: CDK Nag (informational)
-        if: secrets.AWS_ROLE_ARN != ''
+        if: env.AWS_ROLE_ARN != ''
         run: >-
           CDK_NAG=true cdk synth 2>&1
           | grep -E "^\[.*Nag\]|AwsSolutions" || true
 
       - name: CDK Diff
-        if: secrets.AWS_ROLE_ARN != ''
+        if: env.AWS_ROLE_ARN != ''
         id: diff
         run: |
           diff_output=$(cdk diff 2>&1) || true
@@ -122,7 +124,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Comment diff on PR
-        if: secrets.AWS_ROLE_ARN != ''
+        if: env.AWS_ROLE_ARN != ''
         uses: actions/github-script@v7
         env:
           DIFF: ${{ steps.diff.outputs.diff }}
@@ -155,5 +157,5 @@ jobs:
             }
 
       - name: AWS credentials not configured
-        if: secrets.AWS_ROLE_ARN == ''
+        if: env.AWS_ROLE_ARN == ''
         run: echo "::warning::AWS_ROLE_ARN secret not set — skipping synth/diff"
