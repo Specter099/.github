@@ -11,6 +11,13 @@ on:
         description: Directory to scan for bucket names
         type: string
         default: "."
+      template-dir:
+        description: >
+          Directory containing synthesized CloudFormation *.template.json files
+          (e.g. cdk.out). When provided, scans templates instead of (or in
+          addition to) Python source. Omit to use Python source scan only.
+        type: string
+        default: ""
 
 jobs:
   validate-bucket-names:
@@ -37,7 +44,14 @@ jobs:
 
       - name: Validate S3 bucket names
         id: validate
-        run: python .shared-github/scripts/validate_bucket_names.py --path ${{ inputs.scan-path }}
+        env:
+          SCAN_PATH: ${{ inputs.scan-path }}
+          TEMPLATE_DIR: ${{ inputs.template-dir }}
+        run: |
+          args=()
+          [ -n "$SCAN_PATH" ]    && args+=(--path "$SCAN_PATH")
+          [ -n "$TEMPLATE_DIR" ] && args+=(--template-dir "$TEMPLATE_DIR")
+          python .shared-github/scripts/validate_bucket_names.py "${args[@]}"
 
       - name: Comment on PR (violations only)
         if: failure() && github.event_name == 'pull_request'
