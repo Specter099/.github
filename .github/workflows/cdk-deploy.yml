@@ -11,6 +11,10 @@ on:
         description: CDK CLI npm version to install
         type: string
         default: "2.1106.1"
+      stacks:
+        description: Stack name(s) to deploy, or '--all' for all stacks
+        type: string
+        default: "--all"
       smoke-test-url:
         description: URL to curl after deploy for smoke test (optional)
         type: string
@@ -34,11 +38,13 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: CDK Deploy
-        run: cdk deploy --require-approval never --outputs-file outputs.json
+        env:
+          CDK_STACKS: ${{ inputs.stacks }}
+        run: cdk deploy $CDK_STACKS --require-approval never --outputs-file outputs.json
 
       - name: Upload stack outputs
         if: always()
