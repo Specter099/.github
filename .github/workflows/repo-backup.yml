@@ -18,7 +18,7 @@ on:
       environment:
         description: GitHub environment whose secrets contain AWS_ROLE_ARN
         type: string
-        default: "production"
+        default: "backup"
   workflow_dispatch:
     inputs:
       s3-bucket:
@@ -36,7 +36,7 @@ on:
       environment:
         description: GitHub environment whose secrets contain AWS_ROLE_ARN
         type: string
-        default: "production"
+        default: "backup"
 
 jobs:
   backup:
