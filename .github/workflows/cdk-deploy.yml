@@ -15,6 +15,10 @@ on:
         description: Stack name(s) to deploy, or '--all' for all stacks
         type: string
         default: "--all"
+      environment:
+        description: GitHub environment to use (controls which secrets/vars are loaded)
+        type: string
+        default: "production"
       smoke-test-url:
         description: URL to curl after deploy for smoke test (optional)
         type: string
@@ -26,7 +30,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    environment: production
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +54,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stack-outputs
+          name: stack-outputs-${{ inputs.environment }}
           path: outputs.json
           if-no-files-found: ignore
 
