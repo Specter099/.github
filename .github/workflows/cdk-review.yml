@@ -23,13 +23,6 @@ name: CDK Review
           (optional — skips synth/diff if absent)
         required: false
 jobs:
-  gitleaks:
-    name: Secret Scan
-    uses: Specter099/.github/.github/workflows/gitleaks.yml@main
-    permissions:
-      contents: read
-      pull-requests: read
-
   review:
     name: Synth & Diff
     runs-on: ubuntu-latest
