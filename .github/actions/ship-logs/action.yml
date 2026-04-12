@@ -14,7 +14,7 @@ inputs:
   s3-bucket:
     description: S3 bucket name (required when destination includes s3)
     required: false
-    default: ""
+    default: "github-actions-logging-451645558365-us-east-1-an"
   s3-prefix:
     description: S3 key prefix inside the bucket
     required: false
@@ -22,7 +22,7 @@ inputs:
   cloudwatch-log-group:
     description: CloudWatch Logs log group name
     required: false
-    default: "/github-actions/ci-cd"
+    default: "github-actions-log-group"
   aws-region:
     description: AWS region
     required: false
@@ -34,20 +34,22 @@ runs:
     - name: Resolve log path variables
       id: vars
       shell: bash
+      env:
+        REPO: ${{ github.repository }}
+        WORKFLOW: ${{ github.workflow }}
+        RUN_ID: ${{ github.run_id }}
+        ATTEMPT: ${{ github.run_attempt }}
+        S3_PREFIX: ${{ inputs.s3-prefix }}
       run: |
-        REPO="${{ github.repository }}"
-        WORKFLOW="${{ github.workflow }}"
-        RUN_ID="${{ github.run_id }}"
-        ATTEMPT="${{ github.run_attempt }}"
-        # Sanitise workflow name for use as a path segment
-        SAFE_WORKFLOW=$(echo "$WORKFLOW" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
-        S3_KEY="${{ inputs.s3-prefix }}/${REPO}/${SAFE_WORKFLOW}/${RUN_ID}-${ATTEMPT}"
+        # Sanitise workflow name: keep only alphanumeric and hyphens
+        SAFE_WORKFLOW=$(echo "$WORKFLOW" | tr -cs 'a-zA-Z0-9-' '-' | tr '[:upper:]' '[:lower:]' | sed 's/^-//;s/-$//')
+        S3_KEY="${S3_PREFIX}/${REPO}/${SAFE_WORKFLOW}/${RUN_ID}-${ATTEMPT}"
         CW_STREAM="${REPO}/${SAFE_WORKFLOW}/${RUN_ID}-${ATTEMPT}"
         echo "s3-key=${S3_KEY}" >> "$GITHUB_OUTPUT"
         echo "cw-stream=${CW_STREAM}" >> "$GITHUB_OUTPUT"
 
     - name: Upload logs to S3
-      if: contains(inputs.destination, 's3') && inputs.s3-bucket != ''
+      if: (inputs.destination == 's3' || inputs.destination == 'both') && inputs.s3-bucket != ''
       shell: bash
       env:
         LOG_DIR: ${{ inputs.log-dir }}
@@ -55,12 +57,9 @@ runs:
         S3_KEY: ${{ steps.vars.outputs.s3-key }}
       run: |
         set -euo pipefail
-        # Bundle all logs into a tarball
         tar czf "${RUNNER_TEMP}/ci-logs.tar.gz" -C "$LOG_DIR" .
-        # Upload tarball
         aws s3 cp "${RUNNER_TEMP}/ci-logs.tar.gz" \
           "s3://${S3_BUCKET}/${S3_KEY}/logs.tar.gz"
-        # Upload metadata separately for easy querying
         if [ -f "${LOG_DIR}/metadata.json" ]; then
           aws s3 cp "${LOG_DIR}/metadata.json" \
             "s3://${S3_BUCKET}/${S3_KEY}/metadata.json"
@@ -70,7 +69,7 @@ runs:
         echo "Logs uploaded to \`${S3_URI}\`" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Send logs to CloudWatch
-      if: contains(inputs.destination, 'cloudwatch')
+      if: inputs.destination == 'cloudwatch' || inputs.destination == 'both'
       shell: bash
       env:
         LOG_DIR: ${{ inputs.log-dir }}
@@ -87,78 +86,84 @@ runs:
           --log-group-name "$LOG_GROUP" \
           --retention-in-days 90 \
           --region "$AWS_REGION" 2>/dev/null || true
-        # Create log stream
+        # Create log stream (ignore if exists on retry)
         aws logs create-log-stream \
           --log-group-name "$LOG_GROUP" \
           --log-stream-name "$LOG_STREAM" \
-          --region "$AWS_REGION"
-        # Send each log file as a batch of events
-        SEQUENCE_TOKEN=""
-        for logfile in "$LOG_DIR"/*.log; do
-          [ -f "$logfile" ] || continue
-          BASENAME=$(basename "$logfile")
-          # Build JSON log events array — one event per line, prefixed with filename
-          EVENTS="[]"
-          TS_MS=$(date +%s%3N)
-          while IFS= read -r line || [ -n "$line" ]; do
-            # Escape the line for JSON
-            ESCAPED=$(printf '%s' "$line" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")')
-            EVENTS=$(echo "$EVENTS" | python3 -c "
-        import json, sys
-        events = json.load(sys.stdin)
-        events.append({'timestamp': $TS_MS, 'message': '[${BASENAME}] ' + json.loads($ESCAPED)})
-        print(json.dumps(events))
-        ")
-            TS_MS=$((TS_MS + 1))
-          done < "$logfile"
-          # Skip empty files
-          EVENT_COUNT=$(echo "$EVENTS" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")
-          [ "$EVENT_COUNT" -eq 0 ] && continue
-          # put-log-events (max 1MB / 10000 events per call — CI logs are well under)
-          if [ -z "$SEQUENCE_TOKEN" ]; then
-            RESULT=$(aws logs put-log-events \
-              --log-group-name "$LOG_GROUP" \
-              --log-stream-name "$LOG_STREAM" \
-              --log-events "$EVENTS" \
-              --region "$AWS_REGION" 2>&1) || true
-          else
-            RESULT=$(aws logs put-log-events \
-              --log-group-name "$LOG_GROUP" \
-              --log-stream-name "$LOG_STREAM" \
-              --log-events "$EVENTS" \
-              --sequence-token "$SEQUENCE_TOKEN" \
-              --region "$AWS_REGION" 2>&1) || true
-          fi
-          # Extract next sequence token for subsequent puts
-          SEQUENCE_TOKEN=$(echo "$RESULT" | python3 -c "
-        import json, sys
-        try:
-            print(json.loads(sys.stdin.read()).get('nextSequenceToken',''))
-        except Exception:
-            print('')
-        " 2>/dev/null) || true
-        done
-        # Also send metadata.json as a single event
-        if [ -f "${LOG_DIR}/metadata.json" ]; then
-          META=$(cat "${LOG_DIR}/metadata.json")
-          META_ESCAPED=$(printf '%s' "$META" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")')
-          META_TS=$(date +%s%3N)
-          META_EVENTS="[{\"timestamp\": ${META_TS}, \"message\": $(echo "$META_ESCAPED")}]"
-          if [ -z "$SEQUENCE_TOKEN" ]; then
-            aws logs put-log-events \
-              --log-group-name "$LOG_GROUP" \
-              --log-stream-name "$LOG_STREAM" \
-              --log-events "$META_EVENTS" \
-              --region "$AWS_REGION" 2>/dev/null || true
-          else
-            aws logs put-log-events \
-              --log-group-name "$LOG_GROUP" \
-              --log-stream-name "$LOG_STREAM" \
-              --log-events "$META_EVENTS" \
-              --sequence-token "$SEQUENCE_TOKEN" \
-              --region "$AWS_REGION" 2>/dev/null || true
-          fi
-        fi
+          --region "$AWS_REGION" 2>/dev/null || true
+
+        # Build all events in a single Python invocation and upload via file
+        python3 << 'PYEOF'
+        import json
+        import os
+        import subprocess
+        import sys
+        import time
+        from pathlib import Path
+
+        log_dir    = Path(os.environ["LOG_DIR"])
+        log_group  = os.environ["LOG_GROUP"]
+        log_stream = os.environ["LOG_STREAM"]
+        region     = os.environ["AWS_REGION"]
+
+        sequence_token = None
+
+        def put_events(events):
+            """Send a batch of events to CloudWatch, returning the next sequence token."""
+            global sequence_token
+            if not events:
+                return
+            events_file = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "cw-events.json"
+            events_file.write_text(json.dumps(events))
+            cmd = [
+                "aws", "logs", "put-log-events",
+                "--log-group-name", log_group,
+                "--log-stream-name", log_stream,
+                "--log-events", f"file://{events_file}",
+                "--region", region,
+            ]
+            if sequence_token:
+                cmd += ["--sequence-token", sequence_token]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                try:
+                    sequence_token = json.loads(result.stdout).get("nextSequenceToken")
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+            else:
+                print(f"Warning: put-log-events failed: {result.stderr.strip()}", file=sys.stderr)
+
+        # Process each log file
+        for logfile in sorted(log_dir.glob("*.log")):
+            lines = logfile.read_text(errors="replace").splitlines()
+            if not lines:
+                continue
+            basename = logfile.name
+            ts_ms = int(time.time() * 1000)
+            # CloudWatch limit: 10,000 events / 1MB per put-log-events call
+            batch = []
+            batch_size = 0
+            for i, line in enumerate(lines):
+                message = f"[{basename}] {line}"
+                event = {"timestamp": ts_ms + i, "message": message}
+                event_size = len(json.dumps(event)) + 26  # overhead per event
+                if len(batch) >= 9000 or batch_size + event_size > 900_000:
+                    put_events(batch)
+                    batch = []
+                    batch_size = 0
+                batch.append(event)
+                batch_size += event_size
+            put_events(batch)
+
+        # Send metadata.json as a single event
+        metadata_path = log_dir / "metadata.json"
+        if metadata_path.exists():
+            meta_content = metadata_path.read_text(errors="replace")
+            put_events([{
+                "timestamp": int(time.time() * 1000),
+                "message": meta_content,
+            }])
+        PYEOF
         echo "## CI Logs — CloudWatch" >> "$GITHUB_STEP_SUMMARY"
         echo "Log group: \`${LOG_GROUP}\`  " >> "$GITHUB_STEP_SUMMARY"
         echo "Log stream: \`${LOG_STREAM}\`" >> "$GITHUB_STEP_SUMMARY"
