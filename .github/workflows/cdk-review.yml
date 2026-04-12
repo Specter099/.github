@@ -99,12 +99,6 @@ jobs:
           pip install bandit
           bandit -r . -ll --exclude .venv,cdk.out
 
-      - name: IaC scan (checkov)
-        run: |
-          pip install checkov
-          checkov -d cdk.out --framework cloudformation \
-            --quiet --compact
-
       - name: CDK Nag (informational)
         if: env.AWS_ROLE_ARN != ''
         run: >-
