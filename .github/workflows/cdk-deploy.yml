@@ -59,6 +59,19 @@ jobs:
         with:
           cdk-version: ${{ inputs.cdk-version }}
 
+      - name: Capture setup versions
+        if: ${{ inputs.enable-ci-logs }}
+        run: |
+          {
+            echo "=== Setup Versions ==="
+            echo "node: $(node --version)"
+            echo "npm:  $(npm --version)"
+            echo "cdk:  $(cdk --version)"
+            echo "python3: $(python3 --version)"
+            echo "pip3:    $(pip3 --version)"
+            echo "aws-cli: $(aws --version 2>&1)"
+          } | tee "$RUNNER_TEMP/ci-logs/setup-versions.log"
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -72,9 +85,11 @@ jobs:
         run: |
           set -o pipefail
           if [ "$ENABLE_LOGS" = "true" ]; then
-            cdk deploy $CDK_STACKS --require-approval never --outputs-file outputs.json 2>&1 | tee "$RUNNER_TEMP/ci-logs/cdk-deploy.log"
+            cdk deploy $CDK_STACKS --require-approval never --verbose --outputs-file outputs.json 2>&1 \
+              | awk '{ print strftime("%Y-%m-%dT%H:%M:%SZ"), $0; fflush() }' \
+              | tee "$RUNNER_TEMP/ci-logs/cdk-deploy.log"
           else
-            cdk deploy $CDK_STACKS --require-approval never --outputs-file outputs.json
+            cdk deploy $CDK_STACKS --require-approval never --verbose --outputs-file outputs.json
           fi
 
       - name: Upload stack outputs
@@ -116,7 +131,9 @@ jobs:
             fi
           }
           if [ "$ENABLE_LOGS" = "true" ]; then
-            _run_smoke 2>&1 | tee "$RUNNER_TEMP/ci-logs/smoke-test.log"
+            _run_smoke 2>&1 \
+              | awk '{ print strftime("%Y-%m-%dT%H:%M:%SZ"), $0; fflush() }' \
+              | tee "$RUNNER_TEMP/ci-logs/smoke-test.log"
           else
             _run_smoke
           fi
