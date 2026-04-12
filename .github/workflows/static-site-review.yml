@@ -34,7 +34,7 @@ on:
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
-        default: "s3"
+        default: "both"
       ci-log-s3-bucket:
         description: S3 bucket for CI logs
         type: string
