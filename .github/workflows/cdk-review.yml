@@ -19,7 +19,7 @@ name: CDK Review
       enable-ci-logs:
         description: Ship detailed step logs to S3/CloudWatch
         type: boolean
-        default: false
+        default: true
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
