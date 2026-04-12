@@ -34,11 +34,11 @@ on:
       ci-log-s3-bucket:
         description: S3 bucket for CI logs
         type: string
-        default: ""
+        default: "github-actions-logging-451645558365-us-east-1-an"
       ci-log-cloudwatch-group:
         description: CloudWatch Logs group name
         type: string
-        default: "/github-actions/ci-cd"
+        default: "github-actions-log-group"
 
 jobs:
   deploy:
@@ -147,22 +147,34 @@ jobs:
 
       - name: Generate log metadata
         if: always() && inputs.enable-ci-logs
+        env:
+          META_REPOSITORY: ${{ github.repository }}
+          META_WORKFLOW: ${{ github.workflow }}
+          META_RUN_ID: ${{ github.run_id }}
+          META_RUN_ATTEMPT: ${{ github.run_attempt }}
+          META_REF: ${{ github.ref }}
+          META_SHA: ${{ github.sha }}
+          META_ACTOR: ${{ github.actor }}
+          META_EVENT: ${{ github.event_name }}
+          META_JOB_STATUS: ${{ job.status }}
         run: |
-          cat > "$RUNNER_TEMP/ci-logs/metadata.json" << 'METAEOF'
-          {
-            "repository": "${{ github.repository }}",
-            "workflow": "${{ github.workflow }}",
-            "run_id": "${{ github.run_id }}",
-            "run_attempt": "${{ github.run_attempt }}",
-            "ref": "${{ github.ref }}",
-            "sha": "${{ github.sha }}",
-            "actor": "${{ github.actor }}",
-            "event": "${{ github.event_name }}",
-            "job_status": "${{ job.status }}",
-            "timestamp": "TIMESTAMP_PLACEHOLDER"
+          python3 -c "
+          import json, os, datetime
+          meta = {
+              'repository': os.environ['META_REPOSITORY'],
+              'workflow': os.environ['META_WORKFLOW'],
+              'run_id': os.environ['META_RUN_ID'],
+              'run_attempt': os.environ['META_RUN_ATTEMPT'],
+              'ref': os.environ['META_REF'],
+              'sha': os.environ['META_SHA'],
+              'actor': os.environ['META_ACTOR'],
+              'event': os.environ['META_EVENT'],
+              'job_status': os.environ['META_JOB_STATUS'],
+              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
           }
-          METAEOF
-          sed -i "s/TIMESTAMP_PLACEHOLDER/$(date -u +%Y-%m-%dT%H:%M:%SZ)/" "$RUNNER_TEMP/ci-logs/metadata.json"
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
+              json.dump(meta, f, indent=2)
+          "
 
       - name: Ship CI logs
         if: always() && inputs.enable-ci-logs
