@@ -22,6 +22,22 @@ name: CDK Review
           templates (requires AWS_ROLE_ARN).
         type: boolean
         default: true
+      enable-ci-logs:
+        description: Ship detailed step logs to S3/CloudWatch
+        type: boolean
+        default: true
+      ci-log-destination:
+        description: "Log destination: s3, cloudwatch, or both"
+        type: string
+        default: "both"
+      ci-log-s3-bucket:
+        description: S3 bucket for CI logs
+        type: string
+        default: "github-actions-logging-451645558365-us-east-1-an"
+      ci-log-cloudwatch-group:
+        description: CloudWatch Logs group name
+        type: string
+        default: "github-actions-log-group"
     secrets:
       AWS_ROLE_ARN:
         description: >-
@@ -41,6 +57,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Init CI log directory
+        if: ${{ inputs.enable-ci-logs }}
+        run: mkdir -p "$RUNNER_TEMP/ci-logs"
+
       - name: Setup CDK
         uses: Specter099/.github/.github/actions/setup-cdk@main
         with:
@@ -53,33 +73,63 @@ jobs:
 
       - name: Lint (ruff)
         if: hashFiles('requirements-dev.txt') != '' && success()
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
-          if command -v ruff &> /dev/null; then
-            ruff check .
+          set -o pipefail
+          _run_lint() {
+            if command -v ruff &> /dev/null; then
+              ruff check .
+            else
+              echo "::notice::ruff not installed — skipping lint"
+            fi
+          }
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            _run_lint 2>&1 | tee "$RUNNER_TEMP/ci-logs/ruff-check.log"
           else
-            echo "::notice::ruff not installed — skipping lint"
+            _run_lint
           fi
 
       - name: Unit tests
         if: hashFiles('tests/') != '' && success()
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
-          if command -v pytest &> /dev/null; then
-            pytest tests/ -v || rc=$?
-            if [ "${rc:-0}" -eq 5 ]; then
-              echo "::notice::no tests collected — skipping"
-            elif [ "${rc:-0}" -ne 0 ]; then
-              exit "$rc"
+          set -o pipefail
+          _run_tests() {
+            if command -v pytest &> /dev/null; then
+              pytest tests/ -v || rc=$?
+              if [ "${rc:-0}" -eq 5 ]; then
+                echo "::notice::no tests collected — skipping"
+              elif [ "${rc:-0}" -ne 0 ]; then
+                exit "$rc"
+              fi
+            else
+              echo "::notice::pytest not installed — skipping tests"
             fi
+          }
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            _run_tests 2>&1 | tee "$RUNNER_TEMP/ci-logs/pytest.log"
           else
-            echo "::notice::pytest not installed — skipping tests"
+            _run_tests
           fi
 
       - name: Dependency audit
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
-          if command -v pip-audit &> /dev/null; then
-            pip-audit -r requirements.txt
+          set -o pipefail
+          _run_audit() {
+            if command -v pip-audit &> /dev/null; then
+              pip-audit -r requirements.txt
+            else
+              echo "::notice::pip-audit not installed — skipping audit"
+            fi
+          }
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            _run_audit 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
           else
-            echo "::notice::pip-audit not installed — skipping audit"
+            _run_audit
           fi
 
       - name: Configure AWS credentials
@@ -91,7 +141,15 @@ jobs:
 
       - name: CDK Synth
         if: env.AWS_ROLE_ARN != ''
-        run: cdk synth
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            cdk synth 2>&1 | tee "$RUNNER_TEMP/ci-logs/cdk-synth.log"
+          else
+            cdk synth
+          fi
 
       - name: IAM Access Analyzer — no public access
         if: env.AWS_ROLE_ARN != '' && inputs.enable-access-analyzer
@@ -101,19 +159,34 @@ jobs:
           aws-region: ${{ inputs.aws-region }}
 
       - name: SAST scan (bandit)
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
+          set -o pipefail
           pip install bandit
-          bandit -r . -ll --exclude .venv,cdk.out
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            bandit -r . -ll --exclude .venv,cdk.out 2>&1 | tee "$RUNNER_TEMP/ci-logs/bandit.log"
+          else
+            bandit -r . -ll --exclude .venv,cdk.out
+          fi
 
       - name: CDK Nag (informational)
         if: env.AWS_ROLE_ARN != ''
-        run: >-
-          CDK_NAG=true cdk synth 2>&1
-          | grep -E "^\[.*Nag\]|AwsSolutions" || true
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            CDK_NAG=true cdk synth 2>&1 | grep -E "^\[.*Nag\]|AwsSolutions" | tee "$RUNNER_TEMP/ci-logs/cdk-nag.log" || true
+          else
+            CDK_NAG=true cdk synth 2>&1 | grep -E "^\[.*Nag\]|AwsSolutions" || true
+          fi
 
       - name: CDK Diff
         if: env.AWS_ROLE_ARN != ''
         id: diff
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           diff_output=$(cdk diff 2>&1) || true
           echo "$diff_output"
@@ -122,6 +195,9 @@ jobs:
             echo "$diff_output"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            echo "$diff_output" > "$RUNNER_TEMP/ci-logs/cdk-diff.log"
+          fi
 
       - name: Comment diff on PR
         if: env.AWS_ROLE_ARN != ''
@@ -159,3 +235,44 @@ jobs:
       - name: AWS credentials not configured
         if: env.AWS_ROLE_ARN == ''
         run: echo "::warning::AWS_ROLE_ARN secret not set — skipping synth/diff"
+
+      - name: Generate log metadata
+        if: always() && inputs.enable-ci-logs
+        env:
+          META_REPOSITORY: ${{ github.repository }}
+          META_WORKFLOW: ${{ github.workflow }}
+          META_RUN_ID: ${{ github.run_id }}
+          META_RUN_ATTEMPT: ${{ github.run_attempt }}
+          META_REF: ${{ github.ref }}
+          META_SHA: ${{ github.sha }}
+          META_ACTOR: ${{ github.actor }}
+          META_EVENT: ${{ github.event_name }}
+          META_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -c "
+          import json, os, datetime
+          meta = {
+              'repository': os.environ['META_REPOSITORY'],
+              'workflow': os.environ['META_WORKFLOW'],
+              'run_id': os.environ['META_RUN_ID'],
+              'run_attempt': os.environ['META_RUN_ATTEMPT'],
+              'ref': os.environ['META_REF'],
+              'sha': os.environ['META_SHA'],
+              'actor': os.environ['META_ACTOR'],
+              'event': os.environ['META_EVENT'],
+              'job_status': os.environ['META_JOB_STATUS'],
+              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+          }
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
+              json.dump(meta, f, indent=2)
+          "
+
+      - name: Ship CI logs
+        if: always() && inputs.enable-ci-logs && env.AWS_ROLE_ARN != ''
+        uses: Specter099/.github/.github/actions/ship-logs@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
+          destination: ${{ inputs.ci-log-destination }}
+          s3-bucket: ${{ inputs.ci-log-s3-bucket }}
+          cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group }}
+          aws-region: ${{ inputs.aws-region }}

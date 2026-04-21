@@ -23,6 +23,22 @@ on:
         description: URL to curl after deploy for smoke test (optional)
         type: string
         default: ""
+      enable-ci-logs:
+        description: Ship detailed step logs to S3/CloudWatch
+        type: boolean
+        default: true
+      ci-log-destination:
+        description: "Log destination: s3, cloudwatch, or both"
+        type: string
+        default: "both"
+      ci-log-s3-bucket:
+        description: S3 bucket for CI logs
+        type: string
+        default: "github-actions-logging-451645558365-us-east-1-an"
+      ci-log-cloudwatch-group:
+        description: CloudWatch Logs group name
+        type: string
+        default: "github-actions-log-group"
 
 jobs:
   deploy:
@@ -35,6 +51,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Init CI log directory
+        if: ${{ inputs.enable-ci-logs }}
+        run: mkdir -p "$RUNNER_TEMP/ci-logs"
+
       - name: Setup CDK
         uses: Specter099/.github/.github/actions/setup-cdk@main
         with:
@@ -42,10 +62,26 @@ jobs:
           requirements-path: ${{ inputs.infra-dir }}/requirements.txt
 
       - name: Install frontend dependencies
-        run: npm ci --prefix ${{ inputs.frontend-dir }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            npm ci --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/npm-install.log"
+          else
+            npm ci --prefix ${{ inputs.frontend-dir }}
+          fi
 
       - name: Build frontend
-        run: npm run build --prefix ${{ inputs.frontend-dir }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            npm run build --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/npm-build.log"
+          else
+            npm run build --prefix ${{ inputs.frontend-dir }}
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -55,7 +91,15 @@ jobs:
 
       - name: CDK Deploy
         working-directory: ${{ inputs.infra-dir }}
-        run: cdk deploy --require-approval never --outputs-file outputs.json
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            cdk deploy --require-approval never --outputs-file outputs.json 2>&1 | tee "$RUNNER_TEMP/ci-logs/cdk-deploy.log"
+          else
+            cdk deploy --require-approval never --outputs-file outputs.json
+          fi
 
       - name: Upload stack outputs
         if: always()
@@ -79,14 +123,65 @@ jobs:
 
       - name: Smoke test
         if: ${{ inputs.smoke-test-url != '' }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
-          status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 \
-            "${{ inputs.smoke-test-url }}" || echo "000")
-          echo "Smoke test HTTP status: $status"
-          echo "## Smoke Test" >> "$GITHUB_STEP_SUMMARY"
-          echo "Response from \`${{ inputs.smoke-test-url }}\`: **HTTP $status**" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$status" == "000" ]]; then
-            echo "::warning::Smoke test: curl failed or timed out"
+          set -o pipefail
+          _run_smoke() {
+            status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 \
+              "${{ inputs.smoke-test-url }}" || echo "000")
+            echo "Smoke test HTTP status: $status"
+            echo "## Smoke Test" >> "$GITHUB_STEP_SUMMARY"
+            echo "Response from \`${{ inputs.smoke-test-url }}\`: **HTTP $status**" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$status" == "000" ]]; then
+              echo "::warning::Smoke test: curl failed or timed out"
+            else
+              echo "Smoke test passed — endpoint is reachable."
+            fi
+          }
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            _run_smoke 2>&1 | tee "$RUNNER_TEMP/ci-logs/smoke-test.log"
           else
-            echo "Smoke test passed — endpoint is reachable."
+            _run_smoke
           fi
+
+      - name: Generate log metadata
+        if: always() && inputs.enable-ci-logs
+        env:
+          META_REPOSITORY: ${{ github.repository }}
+          META_WORKFLOW: ${{ github.workflow }}
+          META_RUN_ID: ${{ github.run_id }}
+          META_RUN_ATTEMPT: ${{ github.run_attempt }}
+          META_REF: ${{ github.ref }}
+          META_SHA: ${{ github.sha }}
+          META_ACTOR: ${{ github.actor }}
+          META_EVENT: ${{ github.event_name }}
+          META_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -c "
+          import json, os, datetime
+          meta = {
+              'repository': os.environ['META_REPOSITORY'],
+              'workflow': os.environ['META_WORKFLOW'],
+              'run_id': os.environ['META_RUN_ID'],
+              'run_attempt': os.environ['META_RUN_ATTEMPT'],
+              'ref': os.environ['META_REF'],
+              'sha': os.environ['META_SHA'],
+              'actor': os.environ['META_ACTOR'],
+              'event': os.environ['META_EVENT'],
+              'job_status': os.environ['META_JOB_STATUS'],
+              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+          }
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
+              json.dump(meta, f, indent=2)
+          "
+
+      - name: Ship CI logs
+        if: always() && inputs.enable-ci-logs
+        uses: Specter099/.github/.github/actions/ship-logs@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
+          destination: ${{ inputs.ci-log-destination }}
+          s3-bucket: ${{ inputs.ci-log-s3-bucket }}
+          cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group }}
+          aws-region: ${{ inputs.aws-region }}

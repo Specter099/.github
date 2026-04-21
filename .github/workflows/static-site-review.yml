@@ -27,6 +27,22 @@ on:
         description: Set to true to skip the frontend test step (for repos without tests configured)
         type: boolean
         default: false
+      enable-ci-logs:
+        description: Ship detailed step logs to S3/CloudWatch
+        type: boolean
+        default: true
+      ci-log-destination:
+        description: "Log destination: s3, cloudwatch, or both"
+        type: string
+        default: "both"
+      ci-log-s3-bucket:
+        description: S3 bucket for CI logs
+        type: string
+        default: "github-actions-logging-451645558365-us-east-1-an"
+      ci-log-cloudwatch-group:
+        description: CloudWatch Logs group name
+        type: string
+        default: "github-actions-log-group"
 
 jobs:
   review:
@@ -39,6 +55,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Init CI log directory
+        if: ${{ inputs.enable-ci-logs }}
+        run: mkdir -p "$RUNNER_TEMP/ci-logs"
+
       - name: Setup CDK
         uses: Specter099/.github/.github/actions/setup-cdk@main
         with:
@@ -49,23 +69,63 @@ jobs:
         run: npm ci --prefix ${{ inputs.frontend-dir }}
 
       - name: Lint frontend (ESLint)
-        run: npm run lint --prefix ${{ inputs.frontend-dir }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            npm run lint --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/eslint.log"
+          else
+            npm run lint --prefix ${{ inputs.frontend-dir }}
+          fi
 
       - name: Test frontend (Vitest)
         if: ${{ !inputs.skip-frontend-tests }}
-        run: npm run test --prefix ${{ inputs.frontend-dir }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            npm run test --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/vitest.log"
+          else
+            npm run test --prefix ${{ inputs.frontend-dir }}
+          fi
 
       - name: Build frontend
-        run: npm run build --prefix ${{ inputs.frontend-dir }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            npm run build --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/npm-build.log"
+          else
+            npm run build --prefix ${{ inputs.frontend-dir }}
+          fi
 
       - name: Install infra dev dependencies
         run: pip install -r ${{ inputs.infra-dir }}/requirements-dev.txt
 
       - name: Test infra (pytest)
-        run: pytest ${{ inputs.infra-dir }}/tests/ -v
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            pytest ${{ inputs.infra-dir }}/tests/ -v 2>&1 | tee "$RUNNER_TEMP/ci-logs/pytest.log"
+          else
+            pytest ${{ inputs.infra-dir }}/tests/ -v
+          fi
 
       - name: Dependency audit
-        run: pip-audit -r ${{ inputs.infra-dir }}/requirements.txt
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            pip-audit -r ${{ inputs.infra-dir }}/requirements.txt 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
+          else
+            pip-audit -r ${{ inputs.infra-dir }}/requirements.txt
+          fi
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -75,11 +135,21 @@ jobs:
 
       - name: CDK Synth
         working-directory: ${{ inputs.infra-dir }}
-        run: cdk synth
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            cdk synth 2>&1 | tee "$RUNNER_TEMP/ci-logs/cdk-synth.log"
+          else
+            cdk synth
+          fi
 
       - name: CDK Diff
         id: diff
         working-directory: ${{ inputs.infra-dir }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           diff_output=$(cdk diff 2>&1) || true
           echo "$diff_output"
@@ -88,6 +158,9 @@ jobs:
             echo "$diff_output"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            echo "$diff_output" > "$RUNNER_TEMP/ci-logs/cdk-diff.log"
+          fi
 
       - name: Comment diff on PR
         uses: actions/github-script@v7
@@ -120,3 +193,44 @@ jobs:
                 body,
               });
             }
+
+      - name: Generate log metadata
+        if: always() && inputs.enable-ci-logs
+        env:
+          META_REPOSITORY: ${{ github.repository }}
+          META_WORKFLOW: ${{ github.workflow }}
+          META_RUN_ID: ${{ github.run_id }}
+          META_RUN_ATTEMPT: ${{ github.run_attempt }}
+          META_REF: ${{ github.ref }}
+          META_SHA: ${{ github.sha }}
+          META_ACTOR: ${{ github.actor }}
+          META_EVENT: ${{ github.event_name }}
+          META_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -c "
+          import json, os, datetime
+          meta = {
+              'repository': os.environ['META_REPOSITORY'],
+              'workflow': os.environ['META_WORKFLOW'],
+              'run_id': os.environ['META_RUN_ID'],
+              'run_attempt': os.environ['META_RUN_ATTEMPT'],
+              'ref': os.environ['META_REF'],
+              'sha': os.environ['META_SHA'],
+              'actor': os.environ['META_ACTOR'],
+              'event': os.environ['META_EVENT'],
+              'job_status': os.environ['META_JOB_STATUS'],
+              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+          }
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
+              json.dump(meta, f, indent=2)
+          "
+
+      - name: Ship CI logs
+        if: always() && inputs.enable-ci-logs
+        uses: Specter099/.github/.github/actions/ship-logs@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
+          destination: ${{ inputs.ci-log-destination }}
+          s3-bucket: ${{ inputs.ci-log-s3-bucket }}
+          cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group }}
+          aws-region: ${{ inputs.aws-region }}

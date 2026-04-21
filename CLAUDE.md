@@ -4,63 +4,62 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Shared GitHub Actions reusable workflows and composite actions for Specter099 repositories. Provides standardized CI/CD pipelines for CDK projects, static site deployments, Python CI, repo backups, and security scanning.
-
-## Directory Structure
-
-```
-.github/
-  actions/
-    access-analyzer/action.yml   # Composite action — IAM Access Analyzer no-public-access check
-    setup-cdk/action.yml         # Composite action — install Python, Node, CDK CLI, pip deps
-  workflows/
-    access-analyzer-check.yml    # Reusable workflow — Access Analyzer scan of CFN templates
-    backup.yml                   # (legacy) Repo backup workflow
-    cdk-deploy.yml               # Reusable workflow — CDK deploy to production
-    cdk-review.yml               # Reusable workflow — CDK lint, test, synth, diff on PRs
-    gitleaks.yml                 # Reusable workflow — secret scanning with gitleaks
-    python-ci.yml                # Reusable workflow — lint, format, pytest for Python projects
-    repo-backup.yml              # Reusable workflow — git archive to S3
-    static-site-deploy.yml       # Reusable workflow — frontend build + CDK deploy
-    static-site-review.yml       # Reusable workflow — frontend + CDK PR checks
-    validate-bucket-names.yml    # Reusable workflow — S3 naming convention enforcement
-scripts/
-  check_no_public_access.py      # Access Analyzer helper script
-  validate_bucket_names.py       # S3 bucket name convention validator
-```
+Shared GitHub Actions reusable workflows and composite actions for the Specter099 org. Provides standardized CI/CD pipelines for CDK projects, static sites (frontend + CDK infra), pure Python libraries, repo backups to S3, secret scanning, IAM Access Analyzer checks, and S3 bucket naming convention enforcement. Consumed by caller repos via `uses: Specter099/.github/.github/workflows/<name>@main`.
 
 ## Common Commands
 
-```
-# Lint YAML files
-yamllint -c .yamllint.yml .
+# Lint all YAML files
+yamllint -c .yamllint.yml .github/
 
-# Run bucket name validator locally
-python scripts/validate_bucket_names.py --path .
-```
+# Validate bucket naming script locally
+python scripts/validate_bucket_names.py --path /path/to/cdk/project
 
-## Workflow Reference
+# Run access analyzer check locally (requires AWS credentials)
+python scripts/check_no_public_access.py --template-dir /path/to/cdk.out
 
-| Workflow | Trigger | Purpose |
+## Directory Structure
+
+.github/
+  workflows/
+    cdk-review.yml            # PR check: lint, test, synth, diff, SAST, IaC scan
+    cdk-deploy.yml            # Deploy CDK stacks to production
+    static-site-review.yml    # PR check: frontend + CDK infra
+    static-site-deploy.yml    # Build frontend + deploy CDK
+    python-ci.yml             # Lint (ruff), format, gitleaks, pytest
+    repo-backup.yml           # Archive repo to S3 (reusable)
+    backup.yml                # Weekly self-backup (schedule: Sunday 02:00 UTC)
+    access-analyzer-check.yml # IAM Access Analyzer public access check
+    validate-bucket-names.yml # S3 bucket naming convention enforcement
+    gitleaks.yml              # Secret scan (reusable wrapper)
+  actions/
+    setup-cdk/action.yml      # Composite: Python 3.12 + Node 22 + CDK CLI
+    access-analyzer/action.yml # Composite: scan CFN templates for public access
+scripts/
+  check_no_public_access.py   # CLI for IAM Access Analyzer CheckNoPublicAccess API
+  validate_bucket_names.py    # AST-based S3 bucket_name= convention checker
+
+## Architecture
+
+All workflows use `workflow_call` triggers — caller repos reference them with `uses:` and pass inputs. AWS authentication is OIDC-based: callers must have an `AWS_ROLE_ARN` secret on their GitHub environment (default: `production`).
+
+**Workflow dependency chain:**
+- `cdk-review` and `cdk-deploy` both use the `setup-cdk` composite action
+- `static-site-review` and `static-site-deploy` extend CDK workflows with frontend (npm) build/test steps
+- `cdk-review` includes SAST (bandit), IaC scanning (checkov), and CDK Nag in addition to synth/diff
+- `python-ci` is standalone (no AWS credentials needed) — runs ruff, gitleaks, and pytest
+
+**PR diff commenting:** `cdk-review` and `static-site-review` post CDK diff output as a PR comment, updating in place on re-runs.
+
+**Bucket naming convention:** `{prefix}-{12-digit-account-id}-{aws-region}-an`. The `validate-bucket-names` workflow checks both Python source (AST parsing for `bucket_name=` kwargs) and synthesized CloudFormation templates.
+
+## Configuration
+
+| Secret/Variable | Scope | Purpose |
 |---|---|---|
-| `cdk-review` | `workflow_call` | PR check: lint, test, `cdk synth`, `cdk diff` + PR comment |
-| `cdk-deploy` | `workflow_call` | Deploy CDK to `production` env, optional smoke test |
-| `static-site-review` | `workflow_call` | PR check for frontend + CDK monorepos |
-| `static-site-deploy` | `workflow_call` | Build frontend + deploy CDK |
-| `python-ci` | `workflow_call` | Lint, format-check, gitleaks, pytest for pure Python |
-| `repo-backup` | `workflow_call`, `workflow_dispatch` | Archive repo to S3 |
-| `gitleaks` | `workflow_call` | Secret scanning (full git history) |
-| `access-analyzer-check` | `workflow_call` | IAM Access Analyzer no-public-access check |
-| `validate-bucket-names` | `workflow_call` | S3 bucket naming convention enforcement |
+| `AWS_ROLE_ARN` | Environment secret | IAM role ARN for OIDC federation (all AWS workflows) |
+| `BACKUP_S3_BUCKET` | Environment variable | S3 bucket for repo backups (`backup.yml`) |
 
-## Composite Actions
+## Code Style
 
-- **`setup-cdk`** — Installs Python 3.12, Node 22, pinned CDK CLI, and pip dependencies. Used internally by CDK workflows.
-- **`access-analyzer`** — Runs `CheckNoPublicAccess` API against synthesized CloudFormation templates. Supports both JSON and YAML (via cfn-flip).
-
-## Conventions
-
-- All workflows assume a `production` GitHub environment with an `AWS_ROLE_ARN` secret for OIDC authentication.
-- S3 bucket names must follow: `{purpose}-{account-id}-{region}-an`.
-- Default CDK CLI version: `2.1106.1`. Default Python: `3.12`.
-- Callers reference workflows as `Specter099/.github/.github/workflows/{name}.yml@main`.
+- YAML: `.yamllint.yml` config — line-length disabled, document-start disabled, truthy allows `on`
+- Python scripts: no formatter config in repo — follow existing style (type hints, argparse CLI, boto3)

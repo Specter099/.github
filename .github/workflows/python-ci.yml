@@ -49,12 +49,40 @@ name: Python CI
         description: Run bandit SAST scan (medium+ severity)
         type: boolean
         default: false
+      enable-ci-logs:
+        description: Ship detailed step logs to S3/CloudWatch
+        type: boolean
+        default: true
+      ci-log-destination:
+        description: "Log destination: s3, cloudwatch, or both"
+        type: string
+        default: "both"
+      ci-log-s3-bucket:
+        description: S3 bucket for CI logs
+        type: string
+        default: "github-actions-logging-451645558365-us-east-1-an"
+      ci-log-cloudwatch-group:
+        description: CloudWatch Logs group name
+        type: string
+        default: "github-actions-log-group"
+      aws-region:
+        description: AWS region (used for CI log shipping)
+        type: string
+        default: "us-east-1"
+    secrets:
+      AWS_ROLE_ARN:
+        description: >-
+          IAM role ARN for OIDC federation (required when enable-ci-logs is true)
+        required: false
 
 jobs:
   ci:
     name: "Lint, Secrets & Test (py${{ matrix.python-version }})"
     runs-on: ubuntu-latest
     permissions:
+      # id-token: write is needed for OIDC when enable-ci-logs is true.
+      # The OIDC credential step itself is gated behind enable-ci-logs.
+      id-token: write
       contents: read
     strategy:
       fail-fast: false
@@ -65,6 +93,10 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           fetch-depth: 0  # full history required by gitleaks
+
+      - name: Init CI log directory
+        if: ${{ inputs.enable-ci-logs }}
+        run: mkdir -p "$RUNNER_TEMP/ci-logs"
 
       - name: Setup Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
@@ -87,10 +119,26 @@ jobs:
           fi
 
       - name: Lint (ruff)
-        run: ruff check .
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            ruff check . 2>&1 | tee "$RUNNER_TEMP/ci-logs/ruff-check.log"
+          else
+            ruff check .
+          fi
 
       - name: Format check (ruff)
-        run: ruff format --check .
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            ruff format --check . 2>&1 | tee "$RUNNER_TEMP/ci-logs/ruff-format.log"
+          else
+            ruff format --check .
+          fi
 
       - name: Secrets scan (gitleaks)
         uses: gitleaks/gitleaks-action@f586c14365d4643c6aa59d472ae6e984bf47bb34  # v2.3.8
@@ -99,30 +147,108 @@ jobs:
 
       - name: Dependency audit (pip-audit)
         if: ${{ inputs.pip-audit }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
+          set -o pipefail
           pip install pip-audit
-          pip-audit
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            pip-audit 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
+          else
+            pip-audit
+          fi
 
       - name: SAST scan (bandit)
         if: ${{ inputs.bandit }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
+          set -o pipefail
           pip install bandit
-          bandit -r . -ll --exclude .venv,cdk.out
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            bandit -r . -ll --exclude .venv,cdk.out 2>&1 | tee "$RUNNER_TEMP/ci-logs/bandit.log"
+          else
+            bandit -r . -ll --exclude .venv,cdk.out
+          fi
 
       - name: Unit tests (pytest)
         if: ${{ !inputs.coverage }}
         env:
           TESTS_DIR: ${{ inputs.tests-dir }}
-        run: pytest "$TESTS_DIR" -v
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            pytest "$TESTS_DIR" -v 2>&1 | tee "$RUNNER_TEMP/ci-logs/pytest.log"
+          else
+            pytest "$TESTS_DIR" -v
+          fi
 
       - name: Unit tests with coverage (pytest-cov)
         if: ${{ inputs.coverage }}
         env:
           TESTS_DIR: ${{ inputs.tests-dir }}
           COV_THRESHOLD: ${{ inputs.coverage-threshold }}
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
+          set -o pipefail
           pip install pytest-cov
-          pytest "$TESTS_DIR" -v \
-            --cov \
-            --cov-report=term-missing \
-            --cov-fail-under="$COV_THRESHOLD"
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            pytest "$TESTS_DIR" -v \
+              --cov \
+              --cov-report=term-missing \
+              --cov-fail-under="$COV_THRESHOLD" 2>&1 | tee "$RUNNER_TEMP/ci-logs/pytest-cov.log"
+          else
+            pytest "$TESTS_DIR" -v \
+              --cov \
+              --cov-report=term-missing \
+              --cov-fail-under="$COV_THRESHOLD"
+          fi
+
+      - name: Configure AWS credentials for logging
+        if: always() && inputs.enable-ci-logs
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Generate log metadata
+        if: always() && inputs.enable-ci-logs
+        env:
+          META_REPOSITORY: ${{ github.repository }}
+          META_WORKFLOW: ${{ github.workflow }}
+          META_RUN_ID: ${{ github.run_id }}
+          META_RUN_ATTEMPT: ${{ github.run_attempt }}
+          META_REF: ${{ github.ref }}
+          META_SHA: ${{ github.sha }}
+          META_ACTOR: ${{ github.actor }}
+          META_EVENT: ${{ github.event_name }}
+          META_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -c "
+          import json, os, datetime
+          meta = {
+              'repository': os.environ['META_REPOSITORY'],
+              'workflow': os.environ['META_WORKFLOW'],
+              'run_id': os.environ['META_RUN_ID'],
+              'run_attempt': os.environ['META_RUN_ATTEMPT'],
+              'ref': os.environ['META_REF'],
+              'sha': os.environ['META_SHA'],
+              'actor': os.environ['META_ACTOR'],
+              'event': os.environ['META_EVENT'],
+              'job_status': os.environ['META_JOB_STATUS'],
+              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+          }
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
+              json.dump(meta, f, indent=2)
+          "
+
+      - name: Ship CI logs
+        if: always() && inputs.enable-ci-logs
+        uses: Specter099/.github/.github/actions/ship-logs@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
+          destination: ${{ inputs.ci-log-destination }}
+          s3-bucket: ${{ inputs.ci-log-s3-bucket }}
+          cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group }}
+          aws-region: ${{ inputs.aws-region }}
