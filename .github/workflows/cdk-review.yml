@@ -16,6 +16,12 @@ name: CDK Review
         description: URL to curl after deploy (optional)
         type: string
         default: ""
+      enable-access-analyzer:
+        description: >-
+          Run IAM Access Analyzer CheckNoPublicAccess against synthesized
+          templates (requires AWS_ROLE_ARN).
+        type: boolean
+        default: true
       enable-ci-logs:
         description: Ship detailed step logs to S3/CloudWatch
         type: boolean
@@ -144,6 +150,13 @@ jobs:
           else
             cdk synth
           fi
+
+      - name: IAM Access Analyzer — no public access
+        if: env.AWS_ROLE_ARN != '' && inputs.enable-access-analyzer
+        uses: Specter099/.github/.github/actions/access-analyzer@main
+        with:
+          template-dir: cdk.out
+          aws-region: ${{ inputs.aws-region }}
 
       - name: SAST scan (bandit)
         env:
