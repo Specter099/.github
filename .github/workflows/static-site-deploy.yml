@@ -63,24 +63,26 @@ jobs:
 
       - name: Install frontend dependencies
         env:
+          FRONTEND_DIR: ${{ inputs.frontend-dir }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           if [ "$ENABLE_LOGS" = "true" ]; then
-            npm ci --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/npm-install.log"
+            npm ci --prefix "$FRONTEND_DIR" 2>&1 | tee "$RUNNER_TEMP/ci-logs/npm-install.log"
           else
-            npm ci --prefix ${{ inputs.frontend-dir }}
+            npm ci --prefix "$FRONTEND_DIR"
           fi
 
       - name: Build frontend
         env:
+          FRONTEND_DIR: ${{ inputs.frontend-dir }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           if [ "$ENABLE_LOGS" = "true" ]; then
-            npm run build --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/npm-build.log"
+            npm run build --prefix "$FRONTEND_DIR" 2>&1 | tee "$RUNNER_TEMP/ci-logs/npm-build.log"
           else
-            npm run build --prefix ${{ inputs.frontend-dir }}
+            npm run build --prefix "$FRONTEND_DIR"
           fi
 
       - name: Configure AWS credentials
@@ -111,11 +113,13 @@ jobs:
 
       - name: Write outputs to job summary
         if: always()
+        env:
+          INFRA_DIR: ${{ inputs.infra-dir }}
         run: |
-          if [ -f "${{ inputs.infra-dir }}/outputs.json" ]; then
+          if [ -f "$INFRA_DIR/outputs.json" ]; then
             echo "## Stack Outputs" >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat "${{ inputs.infra-dir }}/outputs.json" >> "$GITHUB_STEP_SUMMARY"
+            cat "$INFRA_DIR/outputs.json" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No stack outputs file found." >> "$GITHUB_STEP_SUMMARY"
@@ -124,15 +128,18 @@ jobs:
       - name: Smoke test
         if: ${{ inputs.smoke-test-url != '' }}
         env:
+          SMOKE_TEST_URL: ${{ inputs.smoke-test-url }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           _run_smoke() {
             status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 \
-              "${{ inputs.smoke-test-url }}" || echo "000")
+              "$SMOKE_TEST_URL" || echo "000")
             echo "Smoke test HTTP status: $status"
-            echo "## Smoke Test" >> "$GITHUB_STEP_SUMMARY"
-            echo "Response from \`${{ inputs.smoke-test-url }}\`: **HTTP $status**" >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## Smoke Test"
+              echo "Response from \`$SMOKE_TEST_URL\`: **HTTP $status**"
+            } >> "$GITHUB_STEP_SUMMARY"
             if [[ "$status" == "000" ]]; then
               echo "::warning::Smoke test: curl failed or timed out"
             else

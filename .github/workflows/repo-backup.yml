@@ -53,15 +53,16 @@ jobs:
 
       - name: Resolve inputs
         id: vars
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          S3_PREFIX_INPUT: ${{ inputs.s3-prefix }}
         run: |
-          REPO_NAME="${{ github.event.repository.name }}"
-          PREFIX="${{ inputs.s3-prefix }}"
+          PREFIX="$S3_PREFIX_INPUT"
           if [ -z "$PREFIX" ]; then
             PREFIX="$REPO_NAME"
           fi
           DATE=$(date -u +%Y-%m-%d)
-          SHA="${{ github.sha }}"
-          FILENAME="${REPO_NAME}-${DATE}-${SHA:0:7}.zip"
+          FILENAME="${REPO_NAME}-${DATE}-${GITHUB_SHA:0:7}.zip"
           echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
           echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
           echo "s3-key=${PREFIX}/${FILENAME}" >> "$GITHUB_OUTPUT"
@@ -79,17 +80,26 @@ jobs:
           aws-region: ${{ inputs.aws-region }}
 
       - name: Upload to S3
+        env:
+          FILENAME: ${{ steps.vars.outputs.filename }}
+          S3_BUCKET: ${{ inputs.s3-bucket }}
+          S3_KEY: ${{ steps.vars.outputs.s3-key }}
         run: |
-          aws s3 cp "${{ steps.vars.outputs.filename }}" \
-            "s3://${{ inputs.s3-bucket }}/${{ steps.vars.outputs.s3-key }}"
+          aws s3 cp "$FILENAME" "s3://$S3_BUCKET/$S3_KEY"
 
       - name: Write job summary
+        env:
+          FILENAME: ${{ steps.vars.outputs.filename }}
+          S3_BUCKET: ${{ inputs.s3-bucket }}
+          S3_KEY: ${{ steps.vars.outputs.s3-key }}
         run: |
-          echo "## Repo Backup" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Repository | \`${{ github.repository }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Archive | \`${{ steps.vars.outputs.filename }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Size | $ARCHIVE_SIZE |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| S3 URI | \`s3://${{ inputs.s3-bucket }}/${{ steps.vars.outputs.s3-key }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Repo Backup"
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Repository | \`${GITHUB_REPOSITORY}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Archive | \`${FILENAME}\` |"
+            echo "| Size | ${ARCHIVE_SIZE} |"
+            echo "| S3 URI | \`s3://${S3_BUCKET}/${S3_KEY}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

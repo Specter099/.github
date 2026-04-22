@@ -66,65 +66,74 @@ jobs:
           requirements-path: ${{ inputs.infra-dir }}/requirements.txt
 
       - name: Install frontend dependencies
-        run: npm ci --prefix ${{ inputs.frontend-dir }}
+        env:
+          FRONTEND_DIR: ${{ inputs.frontend-dir }}
+        run: npm ci --prefix "$FRONTEND_DIR"
 
       - name: Lint frontend (ESLint)
         env:
+          FRONTEND_DIR: ${{ inputs.frontend-dir }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           if [ "$ENABLE_LOGS" = "true" ]; then
-            npm run lint --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/eslint.log"
+            npm run lint --prefix "$FRONTEND_DIR" 2>&1 | tee "$RUNNER_TEMP/ci-logs/eslint.log"
           else
-            npm run lint --prefix ${{ inputs.frontend-dir }}
+            npm run lint --prefix "$FRONTEND_DIR"
           fi
 
       - name: Test frontend (Vitest)
         if: ${{ !inputs.skip-frontend-tests }}
         env:
+          FRONTEND_DIR: ${{ inputs.frontend-dir }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           if [ "$ENABLE_LOGS" = "true" ]; then
-            npm run test --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/vitest.log"
+            npm run test --prefix "$FRONTEND_DIR" 2>&1 | tee "$RUNNER_TEMP/ci-logs/vitest.log"
           else
-            npm run test --prefix ${{ inputs.frontend-dir }}
+            npm run test --prefix "$FRONTEND_DIR"
           fi
 
       - name: Build frontend
         env:
+          FRONTEND_DIR: ${{ inputs.frontend-dir }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           if [ "$ENABLE_LOGS" = "true" ]; then
-            npm run build --prefix ${{ inputs.frontend-dir }} 2>&1 | tee "$RUNNER_TEMP/ci-logs/npm-build.log"
+            npm run build --prefix "$FRONTEND_DIR" 2>&1 | tee "$RUNNER_TEMP/ci-logs/npm-build.log"
           else
-            npm run build --prefix ${{ inputs.frontend-dir }}
+            npm run build --prefix "$FRONTEND_DIR"
           fi
 
       - name: Install infra dev dependencies
-        run: pip install -r ${{ inputs.infra-dir }}/requirements-dev.txt
+        env:
+          INFRA_DIR: ${{ inputs.infra-dir }}
+        run: pip install -r "$INFRA_DIR/requirements-dev.txt"
 
       - name: Test infra (pytest)
         env:
+          INFRA_DIR: ${{ inputs.infra-dir }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           if [ "$ENABLE_LOGS" = "true" ]; then
-            pytest ${{ inputs.infra-dir }}/tests/ -v 2>&1 | tee "$RUNNER_TEMP/ci-logs/pytest.log"
+            pytest "$INFRA_DIR/tests/" -v 2>&1 | tee "$RUNNER_TEMP/ci-logs/pytest.log"
           else
-            pytest ${{ inputs.infra-dir }}/tests/ -v
+            pytest "$INFRA_DIR/tests/" -v
           fi
 
       - name: Dependency audit
         env:
+          INFRA_DIR: ${{ inputs.infra-dir }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           if [ "$ENABLE_LOGS" = "true" ]; then
-            pip-audit -r ${{ inputs.infra-dir }}/requirements.txt 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
+            pip-audit -r "$INFRA_DIR/requirements.txt" 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
           else
-            pip-audit -r ${{ inputs.infra-dir }}/requirements.txt
+            pip-audit -r "$INFRA_DIR/requirements.txt"
           fi
 
       - name: Configure AWS credentials
