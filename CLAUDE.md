@@ -48,6 +48,11 @@ All workflows use `workflow_call` triggers — caller repos reference them with 
 - `cdk-review` includes SAST (bandit), IaC scanning (checkov), and CDK Nag in addition to synth/diff
 - `python-ci` is standalone (no AWS credentials needed) — runs ruff, gitleaks, and pytest
 
+**Trigger convention in caller repos:**
+- All checks (review, security, tests, bucket-name validation) MUST trigger on `pull_request: [main]` only.
+- `push: [main]` is reserved for deploy workflows (and scheduled backups).
+- A caller workflow must never trigger on both `pull_request` and `push: [main]` — that double-runs the same checks at merge. Merge protection covers main-branch correctness; PR checks are the gate.
+
 **PR diff commenting:** `cdk-review` and `static-site-review` post CDK diff output as a PR comment, updating in place on re-runs.
 
 **Bucket naming convention:** `{prefix}-{12-digit-account-id}-{aws-region}-an`. The `validate-bucket-names` workflow checks both Python source (AST parsing for `bucket_name=` kwargs) and synthesized CloudFormation templates.
