@@ -12,17 +12,21 @@ inputs:
     required: false
     default: "s3"
   s3-bucket:
-    description: S3 bucket name (required when destination includes s3)
+    description: >-
+      S3 bucket name. Resolution order: input → vars.CI_LOGS_BUCKET →
+      hardcoded fallback below. The action is the canonical source of truth.
     required: false
-    default: "github-actions-logging-451645558365-us-east-1-an"
+    default: ""
   s3-prefix:
     description: S3 key prefix inside the bucket
     required: false
     default: "ci-logs"
   cloudwatch-log-group:
-    description: CloudWatch Logs log group name
+    description: >-
+      CloudWatch Logs log group name. Resolution order: input →
+      vars.CI_LOGS_LOG_GROUP → hardcoded fallback below.
     required: false
-    default: "github-actions-log-group"
+    default: ""
   aws-region:
     description: AWS region
     required: false
@@ -49,11 +53,11 @@ runs:
         echo "cw-stream=${CW_STREAM}" >> "$GITHUB_OUTPUT"
 
     - name: Upload logs to S3
-      if: (inputs.destination == 's3' || inputs.destination == 'both') && inputs.s3-bucket != ''
+      if: inputs.destination == 's3' || inputs.destination == 'both'
       shell: bash
       env:
         LOG_DIR: ${{ inputs.log-dir }}
-        S3_BUCKET: ${{ inputs.s3-bucket }}
+        S3_BUCKET: ${{ inputs.s3-bucket || vars.CI_LOGS_BUCKET || 'github-actions-logging-451645558365-us-east-1-an' }}
         S3_KEY: ${{ steps.vars.outputs.s3-key }}
       run: |
         set -euo pipefail
@@ -73,7 +77,7 @@ runs:
       shell: bash
       env:
         LOG_DIR: ${{ inputs.log-dir }}
-        LOG_GROUP: ${{ inputs.cloudwatch-log-group }}
+        LOG_GROUP: ${{ inputs.cloudwatch-log-group || vars.CI_LOGS_LOG_GROUP || 'github-actions-log-group' }}
         LOG_STREAM: ${{ steps.vars.outputs.cw-stream }}
         AWS_REGION: ${{ inputs.aws-region }}
       run: |
