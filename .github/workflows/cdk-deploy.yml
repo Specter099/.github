@@ -68,6 +68,12 @@ jobs:
         with:
           cdk-version: ${{ inputs.cdk-version != '' && inputs.cdk-version || vars.CDK_CLI_VERSION }}
 
+      - name: Build Lambda layer
+        if: hashFiles('lambda_layer/requirements.txt') != ''
+        run: |
+          pip install -r lambda_layer/requirements.txt -t lambda_layer/python \
+            --platform manylinux2014_aarch64 --only-binary=:all: --quiet
+
       - name: Capture setup versions
         if: ${{ inputs.enable-ci-logs }}
         run: |
