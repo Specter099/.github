@@ -17,8 +17,9 @@ on:
         default: "us-east-1"
       cdk-version:
         description: >-
-          CDK CLI npm version. Empty/unset falls back to vars.CDK_CLI_VERSION
-          in the setup-cdk action.
+          CDK CLI npm version. Empty/unset falls back to
+          `vars.CDK_CLI_VERSION` in the calling repo, then to the
+          hardcoded default in the setup-cdk action.
         type: string
         default: ""
       smoke-test-url:
@@ -39,14 +40,16 @@ on:
         default: "both"
       ci-log-s3-bucket:
         description: >-
-          S3 bucket for CI logs. Empty/unset falls back to vars.CI_LOGS_BUCKET
-          in the ship-logs action.
+          S3 bucket for CI logs. Empty/unset falls back to
+          `vars.CI_LOGS_BUCKET` in the calling repo. Required when
+          ci-log-destination includes 's3'.
         type: string
         default: ""
       ci-log-cloudwatch-group:
         description: >-
           CloudWatch Logs group name. Empty/unset falls back to
-          vars.CI_LOGS_LOG_GROUP in the ship-logs action.
+          `vars.CI_LOGS_LOG_GROUP` in the calling repo. Required when
+          ci-log-destination includes 'cloudwatch'.
         type: string
         default: ""
 
@@ -68,7 +71,7 @@ jobs:
       - name: Setup CDK
         uses: Specter099/.github/.github/actions/setup-cdk@main
         with:
-          cdk-version: ${{ inputs.cdk-version }}
+          cdk-version: ${{ inputs.cdk-version != '' && inputs.cdk-version || vars.CDK_CLI_VERSION }}
           requirements-path: ${{ inputs.infra-dir }}/requirements.txt
 
       - name: Install frontend dependencies
@@ -237,6 +240,6 @@ jobs:
         with:
           log-dir: ${{ runner.temp }}/ci-logs
           destination: ${{ inputs.ci-log-destination }}
-          s3-bucket: ${{ inputs.ci-log-s3-bucket }}
-          cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group }}
+          s3-bucket: ${{ inputs.ci-log-s3-bucket != '' && inputs.ci-log-s3-bucket || vars.CI_LOGS_BUCKET }}
+          cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group != '' && inputs.ci-log-cloudwatch-group || vars.CI_LOGS_LOG_GROUP }}
           aws-region: ${{ inputs.aws-region }}

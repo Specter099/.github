@@ -4,8 +4,10 @@ description: Install Python 3.12, Node 22, pinned CDK CLI, and Python dependenci
 inputs:
   cdk-version:
     description: >-
-      CDK CLI version. Empty/unset falls back to vars.CDK_CLI_VERSION, then
-      to the hardcoded default below.
+      CDK CLI version. Composite actions cannot read the `vars` context,
+      so callers must resolve `vars.CDK_CLI_VERSION` at the workflow level
+      and pass the result here. Falls back to the hardcoded default below
+      if empty.
     required: false
     default: ""
   requirements-path:
@@ -21,9 +23,8 @@ runs:
       shell: bash
       env:
         INPUT_VER: ${{ inputs.cdk-version }}
-        VAR_VER: ${{ vars.CDK_CLI_VERSION }}
       run: |
-        VER="${INPUT_VER:-${VAR_VER:-2.1106.1}}"
+        VER="${INPUT_VER:-2.1106.1}"
         echo "version=$VER" >> "$GITHUB_OUTPUT"
 
     - uses: actions/setup-python@v5
