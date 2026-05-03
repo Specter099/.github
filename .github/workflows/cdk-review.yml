@@ -80,12 +80,6 @@ jobs:
           pip install -r requirements.txt
           [ -f requirements-dev.txt ] && pip install -r requirements-dev.txt || true
 
-      - name: Build Lambda layer
-        if: hashFiles('lambda_layer/requirements.txt') != ''
-        run: |
-          pip install -r lambda_layer/requirements.txt -t lambda_layer/python \
-            --platform manylinux2014_aarch64 --only-binary=:all: --quiet
-
       - name: Lint (ruff)
         if: hashFiles('requirements-dev.txt') != '' && success()
         env:
@@ -180,9 +174,9 @@ jobs:
           set -o pipefail
           pip install bandit
           if [ "$ENABLE_LOGS" = "true" ]; then
-            bandit -r . -ll --exclude .venv,cdk.out 2>&1 | tee "$RUNNER_TEMP/ci-logs/bandit.log"
+            bandit -r . -ll --exclude ./.venv,./cdk.out,./lambda_layer 2>&1 | tee "$RUNNER_TEMP/ci-logs/bandit.log"
           else
-            bandit -r . -ll --exclude .venv,cdk.out
+            bandit -r . -ll --exclude ./.venv,./cdk.out,./lambda_layer
           fi
 
       - name: CDK Nag (informational)
