@@ -59,14 +59,16 @@ name: Python CI
         default: "both"
       ci-log-s3-bucket:
         description: >-
-          S3 bucket for CI logs. Empty/unset falls back to vars.CI_LOGS_BUCKET
-          in the ship-logs action.
+          S3 bucket for CI logs. Empty/unset falls back to
+          `vars.CI_LOGS_BUCKET` in the calling repo. Required when
+          ci-log-destination includes 's3'.
         type: string
         default: ""
       ci-log-cloudwatch-group:
         description: >-
           CloudWatch Logs group name. Empty/unset falls back to
-          vars.CI_LOGS_LOG_GROUP in the ship-logs action.
+          `vars.CI_LOGS_LOG_GROUP` in the calling repo. Required when
+          ci-log-destination includes 'cloudwatch'.
         type: string
         default: ""
       aws-region:
@@ -253,6 +255,6 @@ jobs:
         with:
           log-dir: ${{ runner.temp }}/ci-logs
           destination: ${{ inputs.ci-log-destination }}
-          s3-bucket: ${{ inputs.ci-log-s3-bucket }}
-          cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group }}
+          s3-bucket: ${{ inputs.ci-log-s3-bucket != '' && inputs.ci-log-s3-bucket || vars.CI_LOGS_BUCKET }}
+          cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group != '' && inputs.ci-log-cloudwatch-group || vars.CI_LOGS_LOG_GROUP }}
           aws-region: ${{ inputs.aws-region }}
