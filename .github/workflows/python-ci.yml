@@ -58,13 +58,17 @@ name: Python CI
         type: string
         default: "both"
       ci-log-s3-bucket:
-        description: S3 bucket for CI logs
+        description: >-
+          S3 bucket for CI logs. Empty/unset falls back to vars.CI_LOGS_BUCKET
+          in the ship-logs action.
         type: string
-        default: "github-actions-logging-451645558365-us-east-1-an"
+        default: ""
       ci-log-cloudwatch-group:
-        description: CloudWatch Logs group name
+        description: >-
+          CloudWatch Logs group name. Empty/unset falls back to
+          vars.CI_LOGS_LOG_GROUP in the ship-logs action.
         type: string
-        default: "github-actions-log-group"
+        default: ""
       aws-region:
         description: AWS region (used for CI log shipping)
         type: string

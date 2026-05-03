@@ -3,9 +3,11 @@ description: Install Python 3.12, Node 22, pinned CDK CLI, and Python dependenci
 
 inputs:
   cdk-version:
-    description: CDK CLI version to install
+    description: >-
+      CDK CLI version. Empty/unset falls back to vars.CDK_CLI_VERSION, then
+      to the hardcoded default below.
     required: false
-    default: "2.1106.1"
+    default: ""
   requirements-path:
     description: Path to requirements.txt relative to repo root
     required: false
@@ -14,6 +16,16 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Resolve CDK version
+      id: cdk-ver
+      shell: bash
+      env:
+        INPUT_VER: ${{ inputs.cdk-version }}
+        VAR_VER: ${{ vars.CDK_CLI_VERSION }}
+      run: |
+        VER="${INPUT_VER:-${VAR_VER:-2.1106.1}}"
+        echo "version=$VER" >> "$GITHUB_OUTPUT"
+
     - uses: actions/setup-python@v5
       with:
         python-version: "3.12"
@@ -27,11 +39,11 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.npm
-        key: npm-${{ runner.os }}-cdk-${{ inputs.cdk-version }}
+        key: npm-${{ runner.os }}-cdk-${{ steps.cdk-ver.outputs.version }}
 
     - name: Install CDK CLI
       shell: bash
-      run: npm install -g aws-cdk@${{ inputs.cdk-version }}
+      run: npm install -g aws-cdk@${{ steps.cdk-ver.outputs.version }}
 
     - name: Install Python dependencies
       shell: bash

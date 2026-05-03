@@ -12,17 +12,22 @@ inputs:
     required: false
     default: "s3"
   s3-bucket:
-    description: S3 bucket name (required when destination includes s3)
+    description: >-
+      S3 bucket name. Empty/unset falls back to vars.CI_LOGS_BUCKET; if that
+      is also unset, the S3 upload step is skipped.
     required: false
-    default: "github-actions-logging-451645558365-us-east-1-an"
+    default: ""
   s3-prefix:
     description: S3 key prefix inside the bucket
     required: false
     default: "ci-logs"
   cloudwatch-log-group:
-    description: CloudWatch Logs log group name
+    description: >-
+      CloudWatch Logs log group name. Empty/unset falls back to
+      vars.CI_LOGS_LOG_GROUP; if that is also unset, the CloudWatch upload
+      step is skipped.
     required: false
-    default: "github-actions-log-group"
+    default: ""
   aws-region:
     description: AWS region
     required: false
@@ -49,11 +54,11 @@ runs:
         echo "cw-stream=${CW_STREAM}" >> "$GITHUB_OUTPUT"
 
     - name: Upload logs to S3
-      if: (inputs.destination == 's3' || inputs.destination == 'both') && inputs.s3-bucket != ''
+      if: (inputs.destination == 's3' || inputs.destination == 'both') && (inputs.s3-bucket != '' || vars.CI_LOGS_BUCKET != '')
       shell: bash
       env:
         LOG_DIR: ${{ inputs.log-dir }}
-        S3_BUCKET: ${{ inputs.s3-bucket }}
+        S3_BUCKET: ${{ inputs.s3-bucket || vars.CI_LOGS_BUCKET }}
         S3_KEY: ${{ steps.vars.outputs.s3-key }}
       run: |
         set -euo pipefail
@@ -69,11 +74,11 @@ runs:
         echo "Logs uploaded to \`${S3_URI}\`" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Send logs to CloudWatch
-      if: inputs.destination == 'cloudwatch' || inputs.destination == 'both'
+      if: (inputs.destination == 'cloudwatch' || inputs.destination == 'both') && (inputs.cloudwatch-log-group != '' || vars.CI_LOGS_LOG_GROUP != '')
       shell: bash
       env:
         LOG_DIR: ${{ inputs.log-dir }}
-        LOG_GROUP: ${{ inputs.cloudwatch-log-group }}
+        LOG_GROUP: ${{ inputs.cloudwatch-log-group || vars.CI_LOGS_LOG_GROUP }}
         LOG_STREAM: ${{ steps.vars.outputs.cw-stream }}
         AWS_REGION: ${{ inputs.aws-region }}
       run: |

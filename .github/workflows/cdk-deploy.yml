@@ -8,9 +8,11 @@ on:
         type: string
         default: "us-east-1"
       cdk-version:
-        description: CDK CLI npm version to install
+        description: >-
+          CDK CLI npm version. Empty/unset falls back to vars.CDK_CLI_VERSION
+          in the setup-cdk action.
         type: string
-        default: "2.1106.1"
+        default: ""
       stacks:
         description: Stack name(s) to deploy, or '--all' for all stacks
         type: string
@@ -32,13 +34,17 @@ on:
         type: string
         default: "both"
       ci-log-s3-bucket:
-        description: S3 bucket for CI logs
+        description: >-
+          S3 bucket for CI logs. Empty/unset falls back to vars.CI_LOGS_BUCKET
+          in the ship-logs action.
         type: string
-        default: "github-actions-logging-451645558365-us-east-1-an"
+        default: ""
       ci-log-cloudwatch-group:
-        description: CloudWatch Logs group name
+        description: >-
+          CloudWatch Logs group name. Empty/unset falls back to
+          vars.CI_LOGS_LOG_GROUP in the ship-logs action.
         type: string
-        default: "github-actions-log-group"
+        default: ""
 jobs:
   deploy:
     name: Deploy
