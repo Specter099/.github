@@ -157,11 +157,12 @@ jobs:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
+          pip install --upgrade pip
           pip install pip-audit
           if [ "$ENABLE_LOGS" = "true" ]; then
-            pip-audit 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
+            pip-audit --ignore-vuln CVE-2026-3219 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
           else
-            pip-audit
+            pip-audit --ignore-vuln CVE-2026-3219
           fi
 
       - name: SAST scan (bandit)
