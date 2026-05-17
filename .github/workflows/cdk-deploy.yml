@@ -1,0 +1,189 @@
+name: CDK Deploy
+
+on:
+  workflow_call:
+    inputs:
+      aws-region:
+        description: AWS region to deploy to
+        type: string
+        default: "us-east-1"
+      cdk-version:
+        description: >-
+          CDK CLI npm version. Empty/unset falls back to
+          `vars.CDK_CLI_VERSION` in the calling repo, then to the
+          hardcoded default in the setup-cdk action.
+        type: string
+        default: ""
+      stacks:
+        description: Stack name(s) to deploy, or '--all' for all stacks
+        type: string
+        default: "--all"
+      environment:
+        description: GitHub environment to use (controls which secrets/vars are loaded)
+        type: string
+        default: "production"
+      smoke-test-url:
+        description: URL to curl after deploy for smoke test (optional)
+        type: string
+        default: ""
+      enable-ci-logs:
+        description: Ship detailed step logs to S3/CloudWatch
+        type: boolean
+        default: true
+      ci-log-destination:
+        description: "Log destination: s3, cloudwatch, or both"
+        type: string
+        default: "both"
+      ci-log-s3-bucket:
+        description: >-
+          S3 bucket for CI logs. Empty/unset falls back to
+          `vars.CI_LOGS_BUCKET` in the calling repo. Required when
+          ci-log-destination includes 's3'.
+        type: string
+        default: ""
+      ci-log-cloudwatch-group:
+        description: >-
+          CloudWatch Logs group name. Empty/unset falls back to
+          `vars.CI_LOGS_LOG_GROUP` in the calling repo. Required when
+          ci-log-destination includes 'cloudwatch'.
+        type: string
+        default: ""
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Init CI log directory
+        if: ${{ inputs.enable-ci-logs }}
+        run: mkdir -p "$RUNNER_TEMP/ci-logs"
+
+      - name: Setup CDK
+        uses: Specter099/.github/.github/actions/setup-cdk@main
+        with:
+          cdk-version: ${{ inputs.cdk-version != '' && inputs.cdk-version || vars.CDK_CLI_VERSION }}
+
+      - name: Capture setup versions
+        if: ${{ inputs.enable-ci-logs }}
+        run: |
+          {
+            echo "=== Setup Versions ==="
+            echo "node: $(node --version)"
+            echo "npm:  $(npm --version)"
+            echo "cdk:  $(cdk --version)"
+            echo "python3: $(python3 --version)"
+            echo "pip3:    $(pip3 --version)"
+            echo "aws-cli: $(aws --version 2>&1)"
+          } | tee "$RUNNER_TEMP/ci-logs/setup-versions.log"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: CDK Deploy
+        env:
+          CDK_STACKS: ${{ inputs.stacks }}
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            cdk deploy $CDK_STACKS --require-approval never --verbose --outputs-file outputs.json 2>&1 \
+              | awk '{ print strftime("%Y-%m-%dT%H:%M:%SZ"), $0; fflush() }' \
+              | tee "$RUNNER_TEMP/ci-logs/cdk-deploy.log"
+          else
+            cdk deploy $CDK_STACKS --require-approval never --verbose --outputs-file outputs.json
+          fi
+
+      - name: Upload stack outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stack-outputs-${{ inputs.environment }}
+          path: outputs.json
+          if-no-files-found: ignore
+
+      - name: Write outputs to job summary
+        if: always()
+        run: |
+          if [ -f outputs.json ]; then
+            echo "## Stack Outputs" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat outputs.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No stack outputs file found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Smoke test
+        if: ${{ inputs.smoke-test-url != '' }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          _run_smoke() {
+            status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 \
+              "${{ inputs.smoke-test-url }}" || echo "000")
+            echo "Smoke test HTTP status: $status"
+            echo "## Smoke Test" >> "$GITHUB_STEP_SUMMARY"
+            echo "Response from \`${{ inputs.smoke-test-url }}\`: **HTTP $status**" >> "$GITHUB_STEP_SUMMARY"
+            if [[ "$status" == "000" ]]; then
+              echo "::warning::Smoke test: curl failed or timed out"
+            else
+              echo "Smoke test passed — endpoint is reachable."
+            fi
+          }
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            _run_smoke 2>&1 \
+              | awk '{ print strftime("%Y-%m-%dT%H:%M:%SZ"), $0; fflush() }' \
+              | tee "$RUNNER_TEMP/ci-logs/smoke-test.log"
+          else
+            _run_smoke
+          fi
+
+      - name: Generate log metadata
+        if: always() && inputs.enable-ci-logs
+        env:
+          META_REPOSITORY: ${{ github.repository }}
+          META_WORKFLOW: ${{ github.workflow }}
+          META_RUN_ID: ${{ github.run_id }}
+          META_RUN_ATTEMPT: ${{ github.run_attempt }}
+          META_REF: ${{ github.ref }}
+          META_SHA: ${{ github.sha }}
+          META_ACTOR: ${{ github.actor }}
+          META_EVENT: ${{ github.event_name }}
+          META_JOB_STATUS: ${{ job.status }}
+        run: |
+          python3 -c "
+          import json, os, datetime
+          meta = {
+              'repository': os.environ['META_REPOSITORY'],
+              'workflow': os.environ['META_WORKFLOW'],
+              'run_id': os.environ['META_RUN_ID'],
+              'run_attempt': os.environ['META_RUN_ATTEMPT'],
+              'ref': os.environ['META_REF'],
+              'sha': os.environ['META_SHA'],
+              'actor': os.environ['META_ACTOR'],
+              'event': os.environ['META_EVENT'],
+              'job_status': os.environ['META_JOB_STATUS'],
+              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+          }
+          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
+              json.dump(meta, f, indent=2)
+          "
+
+      - name: Ship CI logs
+        if: always() && inputs.enable-ci-logs
+        uses: Specter099/.github/.github/actions/ship-logs@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
+          destination: ${{ inputs.ci-log-destination }}
+          s3-bucket: ${{ inputs.ci-log-s3-bucket != '' && inputs.ci-log-s3-bucket || vars.CI_LOGS_BUCKET }}
+          cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group != '' && inputs.ci-log-cloudwatch-group || vars.CI_LOGS_LOG_GROUP }}
+          aws-region: ${{ inputs.aws-region }}
