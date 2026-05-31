@@ -1,0 +1,4 @@
+# Dev/test dependencies for this repo's helper scripts and workflow linting.
+pytest>=8.0
+boto3>=1.34
+yamllint>=1.35

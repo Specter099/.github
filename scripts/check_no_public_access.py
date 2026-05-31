@@ -30,10 +30,9 @@ POLICY_MAP = {
         "ResourcePolicy",
         "AWS::SecretsManager::Secret",
     ),
-    "AWS::IAM::Role": (
-        "AssumeRolePolicyDocument",
-        "AWS::IAM::AssumeRolePolicyDocument",
-    ),
+    # AWS::IAM::Role intentionally excluded: CDK trust policies contain intrinsic
+    # functions (Fn::Sub, Ref, Fn::If) that CheckNoPublicAccess cannot evaluate,
+    # and OIDC trust policies trigger false positives.
 }
 
 # CDK metadata files to skip
