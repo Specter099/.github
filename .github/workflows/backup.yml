@@ -9,12 +9,13 @@ jobs:
   backup:
     name: Backup to S3
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: production
     permissions:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           fetch-depth: 0
 
@@ -35,7 +36,7 @@ jobs:
           echo "ARCHIVE_SIZE=$SIZE" >> "$GITHUB_ENV"
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1

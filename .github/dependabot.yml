@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Keep the SHA-pinned third-party actions current. Covers reusable workflows
+  # under .github/workflows (directory "/") and the composite actions under
+  # .github/actions/*.
+  - package-ecosystem: "github-actions"
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "github-actions"
