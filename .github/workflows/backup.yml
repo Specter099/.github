@@ -1,5 +1,7 @@
 name: Backup to S3
 
+# Weekly self-backup. Thin wrapper over the reusable repo-backup workflow —
+# all backup logic lives in repo-backup.yml.
 on:
   schedule:
     - cron: "0 2 * * 0"  # weekly, Sunday 02:00 UTC
@@ -7,52 +9,12 @@ on:
 
 jobs:
   backup:
-    name: Backup to S3
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: production
+    uses: ./.github/workflows/repo-backup.yml
+    secrets: inherit
     permissions:
       id-token: write
       contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          fetch-depth: 0
-
-      - name: Resolve inputs
-        id: vars
-        run: |
-          REPO_NAME="${{ github.event.repository.name }}"
-          DATE=$(date -u +%Y-%m-%d)
-          SHA="${{ github.sha }}"
-          FILENAME="${REPO_NAME}-${DATE}-${SHA:0:7}.zip"
-          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
-          echo "s3-key=${REPO_NAME}/${FILENAME}" >> "$GITHUB_OUTPUT"
-
-      - name: Create zip archive
-        run: |
-          git archive --format=zip --output="${{ steps.vars.outputs.filename }}" HEAD
-          SIZE=$(du -sh "${{ steps.vars.outputs.filename }}" | cut -f1)
-          echo "ARCHIVE_SIZE=$SIZE" >> "$GITHUB_ENV"
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: Upload to S3
-        run: |
-          aws s3 cp "${{ steps.vars.outputs.filename }}" \
-            "s3://${{ vars.BACKUP_S3_BUCKET }}/${{ steps.vars.outputs.s3-key }}"
-
-      - name: Write job summary
-        run: |
-          echo "## Repo Backup" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Repository | \`${{ github.repository }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Archive | \`${{ steps.vars.outputs.filename }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Size | $ARCHIVE_SIZE |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| S3 URI | \`s3://${{ vars.BACKUP_S3_BUCKET }}/${{ steps.vars.outputs.s3-key }}\` |" >> "$GITHUB_STEP_SUMMARY"
+    with:
+      # BACKUP_S3_BUCKET is a repository-level variable.
+      s3-bucket: ${{ vars.BACKUP_S3_BUCKET }}
+      environment: backup

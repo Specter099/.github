@@ -2,3 +2,5 @@
 pytest>=8.0
 boto3>=1.34
 yamllint>=1.35
+ruff>=0.6
+bandit>=1.7

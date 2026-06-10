@@ -121,11 +121,12 @@ runs:
         log_stream = os.environ["LOG_STREAM"]
         region     = os.environ["AWS_REGION"]
 
-        sequence_token = None
-
         def put_events(events):
-            """Send a batch of events to CloudWatch, returning the next sequence token."""
-            global sequence_token
+            """Send a batch of events to CloudWatch.
+
+            Sequence tokens are not needed: CloudWatch has ignored
+            --sequence-token since Aug 2023.
+            """
             if not events:
                 return
             events_file = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "cw-events.json"
@@ -137,15 +138,8 @@ runs:
                 "--log-events", f"file://{events_file}",
                 "--region", region,
             ]
-            if sequence_token:
-                cmd += ["--sequence-token", sequence_token]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                try:
-                    sequence_token = json.loads(result.stdout).get("nextSequenceToken")
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-            else:
+            if result.returncode != 0:
                 print(f"Warning: put-log-events failed: {result.stderr.strip()}", file=sys.stderr)
 
         # Process each log file

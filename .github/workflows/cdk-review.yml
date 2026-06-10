@@ -16,7 +16,10 @@ name: CDK Review
         type: string
         default: ""
       smoke-test-url:
-        description: URL to curl after deploy (optional)
+        # Unused — kept for caller interface parity with cdk-deploy, and
+        # because at least one caller passes it (removing the input would
+        # break their workflow_call).
+        description: Unused — accepted for interface parity with cdk-deploy
         type: string
         default: ""
       enable-access-analyzer:
@@ -76,10 +79,11 @@ jobs:
         with:
           cdk-version: ${{ inputs.cdk-version != '' && inputs.cdk-version || vars.CDK_CLI_VERSION }}
 
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          [ -f requirements-dev.txt ] && pip install -r requirements-dev.txt || true
+      # setup-cdk already installs requirements.txt; only dev deps are
+      # installed here.
+      - name: Install dev dependencies
+        if: hashFiles('requirements-dev.txt') != ''
+        run: pip install -r requirements-dev.txt
 
       - name: Lint (ruff)
         if: hashFiles('requirements-dev.txt') != '' && success()
