@@ -8,6 +8,8 @@ from supported resource types, and calls CheckNoPublicAccess for each.
 Exit codes:
   0 — all resources pass (or no applicable resources found)
   1 — one or more resources grant public access (when --fail-on-public-access)
+  2 — scan incomplete: a template or policy could not be parsed, or an
+      Access Analyzer API call failed (no violations found otherwise)
 """
 
 import argparse
@@ -47,9 +49,19 @@ def find_templates(template_dir: Path) -> list[Path]:
     return templates
 
 
-def extract_policies(template: dict) -> list[tuple[str, str, dict]]:
-    """Return list of (logical_id, analyzer_resource_type, policy_document)."""
+def extract_policies(
+    template: dict,
+) -> tuple[list[tuple[str, str, dict]], list[tuple[str, str]]]:
+    """
+    Return (policies, errors).
+
+    policies — list of (logical_id, analyzer_resource_type, policy_document).
+    Policy documents serialized as JSON strings (valid CloudFormation) are
+    parsed into dicts. errors — list of (logical_id, message) for policies
+    that could not be parsed.
+    """
     results = []
+    errors = []
     resources = template.get("Resources", {})
     for logical_id, resource in resources.items():
         cf_type = resource.get("Type", "")
@@ -59,8 +71,14 @@ def extract_policies(template: dict) -> list[tuple[str, str, dict]]:
         policy_doc = resource.get("Properties", {}).get(policy_prop)
         if policy_doc is None:
             continue
+        if isinstance(policy_doc, str):
+            try:
+                policy_doc = json.loads(policy_doc)
+            except json.JSONDecodeError as exc:
+                errors.append((logical_id, f"unparseable policy string: {exc}"))
+                continue
         results.append((logical_id, analyzer_type, policy_doc))
-    return results
+    return results, errors
 
 
 def check_policy(client, logical_id: str, analyzer_type: str, policy_doc: dict) -> dict:
@@ -157,6 +175,7 @@ def main() -> int:
     client = boto3.client("accessanalyzer", region_name=args.aws_region)
 
     total_violations = 0
+    total_errors = 0
 
     for template_path in templates:
         template_name = template_path.name
@@ -166,10 +185,14 @@ def main() -> int:
             template = json.loads(template_path.read_text())
         except json.JSONDecodeError as exc:
             print(f"::warning::Could not parse {template_name}: {exc}")
+            total_errors += 1
             continue
 
-        policies = extract_policies(template)
-        if not policies:
+        policies, policy_errors = extract_policies(template)
+        for logical_id, message in policy_errors:
+            print(f"  ⚠  {logical_id} — error: {message}")
+            total_errors += 1
+        if not policies and not policy_errors:
             print("  No applicable resources found — skipping")
             write_summary([], template_name)
             continue
@@ -181,6 +204,7 @@ def main() -> int:
 
             if "error" in result:
                 print(f"  ⚠  {logical_id} ({analyzer_type}) — error: {result['error']}")
+                total_errors += 1
             elif result["public"]:
                 total_violations += 1
                 reasons = (
@@ -198,6 +222,13 @@ def main() -> int:
     if total_violations > 0:
         print(f"::error::{total_violations} resource(s) grant public access")
         return 1 if args.fail_on_public_access else 0
+
+    if total_errors > 0:
+        print(
+            f"::error::{total_errors} template(s)/resource(s) could not be "
+            "checked — scan incomplete"
+        )
+        return 2
 
     print("All resources passed the no-public-access check.")
     return 0
