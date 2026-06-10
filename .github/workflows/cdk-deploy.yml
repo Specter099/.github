@@ -97,6 +97,13 @@ jobs:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
+          # Guard caller-controlled input before unquoted expansion: only
+          # '--all' or space-separated stack names are accepted, so flags or
+          # shell metacharacters can't be smuggled into the cdk command.
+          if [[ ! "$CDK_STACKS" =~ ^(--all|[A-Za-z0-9_-]+( [A-Za-z0-9_-]+)*)$ ]]; then
+            echo "::error::invalid stacks input '$CDK_STACKS' — must be '--all' or space-separated stack names"
+            exit 1
+          fi
           if [ "$ENABLE_LOGS" = "true" ]; then
             cdk deploy $CDK_STACKS --require-approval never --verbose --outputs-file outputs.json 2>&1 \
               | awk '{ print strftime("%Y-%m-%dT%H:%M:%SZ"), $0; fflush() }' \

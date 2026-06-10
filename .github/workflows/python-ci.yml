@@ -24,7 +24,10 @@ name: Python CI
         type: string
         default: "requirements-dev.txt"
       install-command:
-        description: Custom install command (overrides requirements-path)
+        description: >-
+          Custom install command (overrides requirements-path). Must be a
+          single command — shell operators (;, |, &&, redirects, globs) are
+          not interpreted.
         type: string
         default: ""
       tests-dir:
@@ -120,7 +123,12 @@ jobs:
           REQUIREMENTS_PATH: ${{ inputs.requirements-path }}
         run: |
           if [ -n "$INSTALL_COMMAND" ]; then
-            eval "$INSTALL_COMMAND"
+            # No eval: expand unquoted so the shell word-splits but never
+            # re-parses operators — `;`, `|`, `&&`, redirects, and globs in
+            # the input become literal arguments instead of shell syntax.
+            # set -f disables globbing so patterns like .[dev] stay literal.
+            set -f
+            $INSTALL_COMMAND
           else
             pip install -r "$REQUIREMENTS_PATH"
           fi
