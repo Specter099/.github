@@ -186,10 +186,18 @@ jobs:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
+          # Run synth on its own so a synth failure fails the step, then grep
+          # the captured output. grep finding no Nag lines is fine (|| true) —
+          # previously the single pipeline swallowed synth errors too.
+          if ! CDK_NAG=true cdk synth > "$RUNNER_TEMP/cdk-nag-synth.log" 2>&1; then
+            cat "$RUNNER_TEMP/cdk-nag-synth.log"
+            echo "::error::cdk synth failed during CDK Nag run"
+            exit 1
+          fi
           if [ "$ENABLE_LOGS" = "true" ]; then
-            CDK_NAG=true cdk synth 2>&1 | grep -E "^\[.*Nag\]|AwsSolutions" | tee "$RUNNER_TEMP/ci-logs/cdk-nag.log" || true
+            grep -E "^\[.*Nag\]|AwsSolutions" "$RUNNER_TEMP/cdk-nag-synth.log" | tee "$RUNNER_TEMP/ci-logs/cdk-nag.log" || true
           else
-            CDK_NAG=true cdk synth 2>&1 | grep -E "^\[.*Nag\]|AwsSolutions" || true
+            grep -E "^\[.*Nag\]|AwsSolutions" "$RUNNER_TEMP/cdk-nag-synth.log" || true
           fi
 
       - name: CDK Diff
