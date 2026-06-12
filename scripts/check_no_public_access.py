@@ -21,6 +21,76 @@ from pathlib import Path
 import boto3
 from botocore.exceptions import ClientError
 
+
+def partition_for_region(region: str) -> str:
+    if region.startswith("us-gov-"):
+        return "aws-us-gov"
+    if region.startswith("cn-"):
+        return "aws-cn"
+    return "aws"
+
+
+def resolve_intrinsics(node, ctx):
+    """Best-effort resolution of CloudFormation pseudo-parameters and intrinsics
+    to literal values, so CheckNoPublicAccess receives a valid policy document.
+
+    CDK-synthesized policies routinely contain ``Fn::Join``, ``Fn::Sub``,
+    ``Fn::GetAtt`` and ``Ref`` to ``AWS::Partition``/``AWS::AccountId`` etc.
+    CheckNoPublicAccess rejects these with "policy in policyDocument is invalid",
+    which previously made every KMS-key / bucket-policy scan fail as incomplete.
+
+    Public-access is determined solely by ``Principal`` (and ``Condition``).
+    Pseudo-parameters are resolved exactly; any remaining ``Ref``/``Fn::GetAtt``
+    to a resource becomes a harmless placeholder ARN (never ``"*"``), so a
+    genuinely public ``Principal: "*"`` is still detected while the document
+    becomes syntactically valid.
+    """
+    pseudo = {
+        "AWS::Partition": ctx["partition"],
+        "AWS::Region": ctx["region"],
+        "AWS::AccountId": ctx["account"],
+        "AWS::URLSuffix": ctx["url_suffix"],
+    }
+    if isinstance(node, dict):
+        if len(node) == 1:
+            ((key, val),) = node.items()
+            if key == "Ref":
+                if isinstance(val, str) and val in pseudo:
+                    return pseudo[val]
+                return (
+                    f"arn:{ctx['partition']}:placeholder:{ctx['region']}:"
+                    f"{ctx['account']}:{val}"
+                )
+            if key == "Fn::Join" and isinstance(val, list) and len(val) == 2:
+                sep, parts = val
+                resolved = [resolve_intrinsics(p, ctx) for p in parts]
+                if all(isinstance(p, str) for p in resolved):
+                    return sep.join(resolved)
+                return node
+            if key == "Fn::Sub":
+                template, varmap = (
+                    (val[0], val[1]) if isinstance(val, list) else (val, {})
+                )
+                out = template
+                substitutions = dict(pseudo)
+                for name, value in varmap.items():
+                    resolved = resolve_intrinsics(value, ctx)
+                    substitutions[name] = resolved if isinstance(resolved, str) else ""
+                for name, value in substitutions.items():
+                    out = out.replace("${" + name + "}", value)
+                return out
+            if key == "Fn::GetAtt":
+                logical = val[0] if isinstance(val, list) else str(val)
+                return (
+                    f"arn:{ctx['partition']}:placeholder:{ctx['region']}:"
+                    f"{ctx['account']}:{logical}"
+                )
+        return {k: resolve_intrinsics(v, ctx) for k, v in node.items()}
+    if isinstance(node, list):
+        return [resolve_intrinsics(v, ctx) for v in node]
+    return node
+
+
 # Maps CloudFormation resource type → (policy property, Access Analyzer resource type)
 POLICY_MAP = {
     "AWS::S3::BucketPolicy": ("PolicyDocument", "AWS::S3::Bucket"),
@@ -81,11 +151,14 @@ def extract_policies(
     return results, errors
 
 
-def check_policy(client, logical_id: str, analyzer_type: str, policy_doc: dict) -> dict:
+def check_policy(
+    client, logical_id: str, analyzer_type: str, policy_doc: dict, ctx: dict
+) -> dict:
     """Call CheckNoPublicAccess and return a result dict."""
     try:
+        resolved = resolve_intrinsics(policy_doc, ctx)
         resp = client.check_no_public_access(
-            policyDocument=json.dumps(policy_doc),
+            policyDocument=json.dumps(resolved),
             resourceType=analyzer_type,
         )
         is_public = resp.get("result") == "FAIL"
@@ -174,6 +247,18 @@ def main() -> int:
 
     client = boto3.client("accessanalyzer", region_name=args.aws_region)
 
+    # Context for resolving CloudFormation pseudo-parameters to literals.
+    try:
+        account = boto3.client("sts").get_caller_identity()["Account"]
+    except ClientError:
+        account = "000000000000"
+    ctx = {
+        "partition": partition_for_region(args.aws_region),
+        "region": args.aws_region,
+        "account": account,
+        "url_suffix": "amazonaws.com",
+    }
+
     total_violations = 0
     total_errors = 0
 
@@ -199,7 +284,7 @@ def main() -> int:
 
         findings = []
         for logical_id, analyzer_type, policy_doc in policies:
-            result = check_policy(client, logical_id, analyzer_type, policy_doc)
+            result = check_policy(client, logical_id, analyzer_type, policy_doc, ctx)
             findings.append(result)
 
             if "error" in result:
