@@ -5,7 +5,9 @@ description: >
 
 inputs:
   template-dir:
-    description: Directory containing CloudFormation *.template.json files
+    description: >
+      Directory containing CDK-synthesized CloudFormation *.template.json files.
+      Leave empty to skip (e.g. repos with no CDK app — use yaml-template-dir instead).
     default: cdk.out
   yaml-template-dir:
     description: >
@@ -55,8 +57,10 @@ runs:
         [ "$FAIL_ON_PUBLIC_ACCESS" = "true" ] || FAIL_FLAG="--no-fail-on-public-access"
 
         rc=0
-        python3 "$SCRIPT" --template-dir "$TEMPLATE_DIR" \
-          --aws-region "$AWS_REGION" "$FAIL_FLAG" || rc=$?
+        if [ -n "$TEMPLATE_DIR" ]; then
+          python3 "$SCRIPT" --template-dir "$TEMPLATE_DIR" \
+            --aws-region "$AWS_REGION" "$FAIL_FLAG" || rc=$?
+        fi
         if [ -n "$YAML_TEMPLATE_DIR" ]; then
           python3 "$SCRIPT" --template-dir "$YAML_TEMPLATE_DIR" \
             --aws-region "$AWS_REGION" "$FAIL_FLAG" || rc=$?

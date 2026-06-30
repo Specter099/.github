@@ -8,7 +8,9 @@ on:
         type: string
         default: us-east-1
       template-dir:
-        description: Directory containing CloudFormation *.template.json files (e.g. cdk.out)
+        description: >-
+          Directory containing CDK-synthesized CloudFormation *.template.json files.
+          Leave empty to skip (e.g. repos with no CDK app — use yaml-template-dir instead).
         type: string
         default: cdk.out
       yaml-template-dir:

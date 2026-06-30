@@ -107,15 +107,39 @@ class FakeClient:
         return {"result": self._result, "reasons": self._reasons}
 
 
+class FakeStsClient:
+    def get_caller_identity(self):
+        return {"Account": "123456789012"}
+
+
+def fake_boto3_client(accessanalyzer_client):
+    """boto3.client stub that dispatches on service name, like main() expects."""
+
+    def _client(service_name, *args, **kwargs):
+        if service_name == "sts":
+            return FakeStsClient()
+        return accessanalyzer_client
+
+    return _client
+
+
+FAKE_CTX = {
+    "partition": "aws",
+    "region": "us-east-1",
+    "account": "123456789012",
+    "url_suffix": "amazonaws.com",
+}
+
+
 class TestCheckPolicy:
     def test_pass(self):
-        r = cnpa.check_policy(FakeClient("PASS"), "R", "AWS::S3::Bucket", {})
+        r = cnpa.check_policy(FakeClient("PASS"), "R", "AWS::S3::Bucket", {}, FAKE_CTX)
         assert r["public"] is False
         assert "error" not in r
 
     def test_fail_with_reasons(self):
         client = FakeClient("FAIL", reasons=[{"description": "anyone can read"}])
-        r = cnpa.check_policy(client, "R", "AWS::S3::Bucket", {})
+        r = cnpa.check_policy(client, "R", "AWS::S3::Bucket", {}, FAKE_CTX)
         assert r["public"] is True
         assert r["reasons"] == ["anyone can read"]
 
@@ -124,7 +148,9 @@ class TestCheckPolicy:
             {"Error": {"Code": "ValidationException", "Message": "bad policy"}},
             "CheckNoPublicAccess",
         )
-        r = cnpa.check_policy(FakeClient(raises=err), "R", "AWS::S3::Bucket", {})
+        r = cnpa.check_policy(
+            FakeClient(raises=err), "R", "AWS::S3::Bucket", {}, FAKE_CTX
+        )
         assert r["public"] is False
         assert "ValidationException" in r["error"]
 
@@ -181,13 +207,13 @@ class TestMain:
 
     def test_public_access_exits_one(self, tmp_path, monkeypatch):
         self._template(tmp_path)
-        monkeypatch.setattr(cnpa.boto3, "client", lambda *a, **k: FakeClient("FAIL"))
+        monkeypatch.setattr(cnpa.boto3, "client", fake_boto3_client(FakeClient("FAIL")))
         monkeypatch.setattr("sys.argv", ["prog", "--template-dir", str(tmp_path)])
         assert cnpa.main() == 1
 
     def test_public_access_warn_only_exits_zero(self, tmp_path, monkeypatch):
         self._template(tmp_path)
-        monkeypatch.setattr(cnpa.boto3, "client", lambda *a, **k: FakeClient("FAIL"))
+        monkeypatch.setattr(cnpa.boto3, "client", fake_boto3_client(FakeClient("FAIL")))
         monkeypatch.setattr(
             "sys.argv",
             ["prog", "--template-dir", str(tmp_path), "--no-fail-on-public-access"],
@@ -196,7 +222,7 @@ class TestMain:
 
     def test_all_pass_exits_zero(self, tmp_path, monkeypatch):
         self._template(tmp_path)
-        monkeypatch.setattr(cnpa.boto3, "client", lambda *a, **k: FakeClient("PASS"))
+        monkeypatch.setattr(cnpa.boto3, "client", fake_boto3_client(FakeClient("PASS")))
         monkeypatch.setattr("sys.argv", ["prog", "--template-dir", str(tmp_path)])
         assert cnpa.main() == 0
 
@@ -213,14 +239,14 @@ class TestMain:
             "CheckNoPublicAccess",
         )
         monkeypatch.setattr(
-            cnpa.boto3, "client", lambda *a, **k: FakeClient(raises=err)
+            cnpa.boto3, "client", fake_boto3_client(FakeClient(raises=err))
         )
         monkeypatch.setattr("sys.argv", ["prog", "--template-dir", str(tmp_path)])
         assert cnpa.main() == 2
 
     def test_malformed_template_exits_two(self, tmp_path, monkeypatch):
         (tmp_path / "Stack.template.json").write_text("{not json")
-        monkeypatch.setattr(cnpa.boto3, "client", lambda *a, **k: FakeClient("PASS"))
+        monkeypatch.setattr(cnpa.boto3, "client", fake_boto3_client(FakeClient("PASS")))
         monkeypatch.setattr("sys.argv", ["prog", "--template-dir", str(tmp_path)])
         assert cnpa.main() == 2
 
@@ -228,7 +254,7 @@ class TestMain:
         # One template fails to parse, another has a public policy → exit 1.
         (tmp_path / "Broken.template.json").write_text("{not json")
         self._template(tmp_path)
-        monkeypatch.setattr(cnpa.boto3, "client", lambda *a, **k: FakeClient("FAIL"))
+        monkeypatch.setattr(cnpa.boto3, "client", fake_boto3_client(FakeClient("FAIL")))
         monkeypatch.setattr("sys.argv", ["prog", "--template-dir", str(tmp_path)])
         assert cnpa.main() == 1
 
