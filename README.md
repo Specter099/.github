@@ -12,7 +12,12 @@ Reusable workflows and composite actions for CDK projects.
 | `static-site-deploy` | Workflow | Deploy frontend + CDK project to prod |
 | `repo-backup` | Workflow | Back up repo zip to S3 |
 | `python-ci` | Workflow | PR check for any pure Python project |
+| `validate-bucket-names` | Workflow | Enforce S3 bucket naming convention on PRs |
+| `access-analyzer-check` | Workflow | IAM Access Analyzer public-access check |
+| `gitleaks` | Workflow | Standalone secret scan |
 | `setup-cdk` | Action | Composite action — install Python/Node/CDK |
+| `access-analyzer` | Action | Composite — scan CFN templates for public access |
+| `ship-logs` | Action | Composite — upload step logs to S3/CloudWatch |
 
 > **Required secret:** All workflows assume `AWS_ROLE_ARN` is set on the calling repo's `production` environment (or the environment passed via `environment` input).
 
@@ -212,4 +217,36 @@ Installs Python 3.12, Node 22, a pinned CDK CLI version globally, and Python dep
   with:
     cdk-version: "2.1106.1"
     requirements-path: infra/requirements.txt
+```
+
+---
+
+## Helper Scripts
+
+CLI scripts under `scripts/`, used by the workflows above and runnable
+locally. Both exit `0` on success, `1` on violations, and `2` when the scan
+could not be completed (parse or API errors). Tests live in `tests/`
+(`pytest tests/ -v`).
+
+### `scripts/validate_bucket_names.py`
+
+Checks S3 bucket names against the `{prefix}-{12-digit-account-id}-{aws-region}-an`
+convention. Scans Python source via AST for `bucket_name=` kwargs (string
+literals fully validated; f-strings validated best-effort on their literal
+parts) and/or synthesized CloudFormation templates for `BucketName`
+properties.
+
+```bash
+python scripts/validate_bucket_names.py --path /path/to/cdk/project
+python scripts/validate_bucket_names.py --template-dir /path/to/cdk.out
+```
+
+### `scripts/check_no_public_access.py`
+
+Extracts resource policies (S3, SQS, SNS, KMS, ECR, Secrets Manager) from
+synthesized CloudFormation templates and calls the IAM Access Analyzer
+`CheckNoPublicAccess` API for each. Requires AWS credentials.
+
+```bash
+python scripts/check_no_public_access.py --template-dir /path/to/cdk.out
 ```

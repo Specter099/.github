@@ -1,6 +1,6 @@
 # Workflow Review — Remaining Work
 
-Tracks follow-up work from the April 2026 GitHub Actions review. PRs [#45](https://github.com/Specter099/.github/pull/45) (script-injection fix) and [#46](https://github.com/Specter099/.github/pull/46) (Access Analyzer dedupe) already in flight. Everything below is scoped as a separate PR unless noted.
+Tracks follow-up work from the April 2026 GitHub Actions review (updated June 2026). Everything below is scoped as a separate PR unless noted.
 
 Mental model: **all checks in CI (review workflows), CD only deploys.** Do not add check steps to `cdk-deploy.yml` or `static-site-deploy.yml`.
 
@@ -11,66 +11,22 @@ Trigger convention in caller repos:
 
 ---
 
-## P0 — Security & Correctness
+## Done / In flight
 
-### Fix caller-repo `security.yml` triggers
-**Files (external repos):**
-- `Specter099/static-site-infra/.github/workflows/security.yml`
-- `Specter099/bitwarden-cdk/.github/workflows/security.yml`
-- `Specter099/route53-cdk/.github/workflows/security.yml`
-
-All three trigger on both `push: [main]` **and** `pull_request: [main]`. Per the trigger convention, security scans belong to PR flow only. Remove the `push:` block from each.
-
-### Pin all actions to full SHA + add Dependabot
-**Files:** every workflow + `actions/*/action.yml`
-- Replace `@v4`, `@v7`, `@v2`, and internal `@main` refs with 40-char commit SHAs and a trailing `# vX.Y.Z` comment.
-- Especially `Specter099/.github/.github/actions/{setup-cdk,access-analyzer,ship-logs}@main` — `@main` means any commit immediately propagates to every caller.
-- Add `.github/dependabot.yml` with `package-ecosystem: github-actions` to auto-PR SHA bumps weekly.
-- `python-ci.yml` already pins `actions/checkout`, `actions/setup-python`, and `gitleaks-action` by SHA — use as reference.
-
-### Fix CDK Nag silent failure
-**File:** [`cdk-review.yml:173-183`](.github/workflows/cdk-review.yml)
-- `CDK_NAG=true cdk synth 2>&1 | grep … || true` swallows both `cdk synth` errors and grep's exit-1 on "no Nag findings".
-- Fix: run `cdk synth` once (fail on error), capture output, then `grep … || true` on the captured file.
-
-### Validate `CDK_STACKS` input in `cdk-deploy.yml`
-**File:** [`cdk-deploy.yml:82-93`](.github/workflows/cdk-deploy.yml)
-- `$CDK_STACKS` is passed unquoted to `cdk deploy` to allow `--all` or multiple stack names. Caller-controlled.
-- Add a regex guard before exec: `[[ "$CDK_STACKS" =~ ^(--all|[A-Za-z0-9_\-]+( [A-Za-z0-9_\-]+)*)$ ]] || { echo "::error::invalid stacks input"; exit 1; }`
-
----
-
-## P1 — Reliability & Hygiene
-
-### Add `timeout-minutes` to every job
-**Files:** all workflows
-- Default is 6 hours — a hung step burns runner budget.
-- Reviews: `timeout-minutes: 15`. Deploys: `timeout-minutes: 30`. Backup: `timeout-minutes: 10`.
-
-### Consolidate `backup.yml` → `repo-backup.yml`
-**Files:** [`backup.yml`](.github/workflows/backup.yml), [`repo-backup.yml`](.github/workflows/repo-backup.yml)
-- Two near-identical backup jobs. `backup.yml` hardcodes `aws-region: us-east-1` and uses `environment: production` (backup doesn't need prod approvals).
-- Make `backup.yml` call `repo-backup.yml` via `uses: ./.github/workflows/repo-backup.yml` with `environment: backup`.
-
-### Remove dead CloudWatch `sequence_token` plumbing
-**File:** [`actions/ship-logs/action.yml:111-133`](.github/actions/ship-logs/action.yml)
-- `put-log-events --sequence-token` has been optional/ignored by CloudWatch since Aug 2023.
-- Delete the token state-tracking code — simplifies the Python block substantially.
-
-### Remove redundant `pip install` in `cdk-review.yml`
-**File:** [`cdk-review.yml:69-72`](.github/workflows/cdk-review.yml)
-- `setup-cdk` composite already installs `requirements.txt` (default `requirements-path`).
-- Delete the separate `Install dependencies` step. Saves ~15–30s per run.
-
-### Pin internal-action ref in `validate-bucket-names.yml`
-**File:** [`validate-bucket-names.yml:36-38`](.github/workflows/validate-bucket-names.yml)
-- Second `actions/checkout` pulls `Specter099/.github` at implicit `main`. Script changes silently alter caller behavior.
-- After SHA-pinning work above, set `ref: <tag-or-sha>` here too.
-
-### Drop `smoke-test-url` input from `cdk-review.yml`
-**File:** [`cdk-review.yml:15-18`](.github/workflows/cdk-review.yml)
-- Declared but never referenced. Vestigial from interface parity with deploy.
-- Either remove or add a `# unused — kept for caller interface parity` comment.
+- ✅ Fix caller-repo `security.yml` triggers (static-site-infra, bitwarden-cdk, route53-cdk) — all three now trigger on `pull_request` only.
+- ✅ Pin all third-party actions to full SHA + add Dependabot — [#73](https://github.com/Specter099/.github/pull/73). Internal composite refs (`setup-cdk`, `access-analyzer`, `ship-logs`) stay on `@main` deliberately: this is a single-user account with merge protection, and pinning self-references would require a two-phase bump on every action change. Revisit if reproducible caller runs become a requirement (tagged releases).
+- ✅ Add `timeout-minutes` to every job — [#73](https://github.com/Specter099/.github/pull/73).
+- 🔄 Fix CDK Nag silent failure — [#84](https://github.com/Specter099/.github/pull/84).
+- 🔄 Validate `CDK_STACKS` input in `cdk-deploy.yml` — [#84](https://github.com/Specter099/.github/pull/84).
+- 🔄 Drop `eval` of `install-command` in `python-ci.yml` — [#84](https://github.com/Specter099/.github/pull/84).
+- 🔄 Script robustness (f-string validation, stringified policies, exit code 2 for incomplete scans) — [#85](https://github.com/Specter099/.github/pull/85).
+- 🔄 Consolidate `backup.yml` → `repo-backup.yml` — [#86](https://github.com/Specter099/.github/pull/86).
+- 🔄 Remove dead CloudWatch `sequence_token` plumbing — [#86](https://github.com/Specter099/.github/pull/86).
+- 🔄 Remove redundant `pip install` in `cdk-review.yml` — [#86](https://github.com/Specter099/.github/pull/86).
+- 🔄 Pin internal scripts checkout in `validate-bucket-names.yml` (`job.workflow_sha`) — [#86](https://github.com/Specter099/.github/pull/86).
+- 🔄 Document `smoke-test-url` as unused in `cdk-review.yml` (kept — a caller passes it) — [#86](https://github.com/Specter099/.github/pull/86).
+- 🔄 Self-test now runs ruff, bandit, and actionlint — [#86](https://github.com/Specter099/.github/pull/86).
+- 🔄 Reconcile `CLAUDE.md` with actual workflow (checkov claim removed) — this PR.
 
 ---
 
@@ -96,15 +52,9 @@ All three trigger on both `push: [main]` **and** `pull_request: [main]`. Per the
 - `actions/cache` key includes `runner.os` and `cdk-version` but no `hashFiles('**/package-lock.json')` — cache never invalidates when the caller's JS deps change.
 - Either drop the npm cache step entirely (only CDK CLI is installed globally, which is version-keyed) or add a proper hashed key + `restore-keys`.
 
-### Standardize AWS role ARN source
-**File:** [`cdk-deploy.yml:78`](.github/workflows/cdk-deploy.yml)
-- `role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}` — mixed convention. Other workflows require `secrets.AWS_ROLE_ARN` only.
-- Pick one: prefer `vars.AWS_ROLE_ARN` uniformly (ARN isn't secret) and document in `CLAUDE.md`.
-
-### Reconcile `CLAUDE.md` with actual workflow
-**Files:** [`CLAUDE.md`](CLAUDE.md), [`cdk-review.yml`](.github/workflows/cdk-review.yml)
-- `CLAUDE.md` claims `cdk-review` runs **checkov**. No checkov step exists.
-- Either add `checkov -d .` or remove the claim.
+### Enable `ruff format --check` in self-test
+**File:** [`self-test.yml`](.github/workflows/self-test.yml)
+- Deferred from [#86](https://github.com/Specter099/.github/pull/86) because [#85](https://github.com/Specter099/.github/pull/85) reformats the test files. Once #85 lands, add `ruff format --check scripts/ tests/`.
 
 ### Normalize YAML file headers
 **Files:** all workflows
@@ -132,3 +82,14 @@ All three trigger on both `push: [main]` **and** `pull_request: [main]`. Per the
 - Option A: CI uploads `dist/` artifact, CD downloads it. Reproducible, faster CD, but adds artifact plumbing.
 - Option B: Keep current. CI build is validation-only; CD rebuild is the canonical deploy artifact.
 - Decide and document.
+
+---
+
+## Hygiene (from June 2026 review)
+
+### Add SECURITY.md and CODEOWNERS
+- This is the account's special `.github` repo — also the natural home for a `profile/README.md` if one is ever wanted.
+
+### Move ship-logs Python heredoc to `scripts/`
+**File:** [`actions/ship-logs/action.yml`](.github/actions/ship-logs/action.yml)
+- The embedded Python block would be unit-testable as `scripts/ship_logs.py`.
