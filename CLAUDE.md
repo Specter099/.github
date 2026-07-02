@@ -34,6 +34,7 @@ python scripts/check_no_public_access.py --template-dir /path/to/cdk.out
   actions/
     setup-cdk/action.yml      # Composite: Python 3.12 + Node 22 + CDK CLI
     access-analyzer/action.yml # Composite: scan CFN templates for public access
+  PULL_REQUEST_TEMPLATE.md    # Org-wide default PR template (applies to any repo without its own)
 scripts/
   check_no_public_access.py   # CLI for IAM Access Analyzer CheckNoPublicAccess API
   validate_bucket_names.py    # AST-based S3 bucket_name= convention checker

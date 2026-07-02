@@ -213,3 +213,9 @@ Installs Python 3.12, Node 22, a pinned CDK CLI version globally, and Python dep
     cdk-version: "2.1106.1"
     requirements-path: infra/requirements.txt
 ```
+
+---
+
+## Default PR Template
+
+[`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) in this repo is picked up by GitHub as the **org-wide default pull request template**. Any repo in the `Specter099` org that doesn't define its own `.github/pull_request_template.md` will use it automatically — no per-repo setup required.
