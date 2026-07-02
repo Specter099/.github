@@ -30,5 +30,21 @@ jobs:
       - name: Lint YAML (yamllint)
         run: yamllint -c .yamllint.yml .github/
 
+      - name: Lint Python (ruff)
+        run: ruff check scripts/ tests/
+
+      - name: SAST scan (bandit)
+        run: bandit -r scripts/ -ll -q
+
+      - name: Lint workflows (actionlint)
+        run: |
+          # Download script pinned to the v1.7.12 tag's commit SHA.
+          bash <(curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/914e7df21a07ef503a81201c76d2b11c789d3fca/scripts/download-actionlint.bash") 1.7.12 "$RUNNER_TEMP"
+          # -shellcheck= disables shellcheck integration (style noise on
+          # intentional unquoted expansions). The -ignore covers
+          # job.workflow_sha, which is valid but missing from actionlint's
+          # context model as of 1.7.12.
+          "$RUNNER_TEMP/actionlint" -shellcheck= -ignore 'property "workflow_sha" is not defined'
+
       - name: Run tests (pytest)
         run: pytest tests/ -v
