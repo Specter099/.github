@@ -62,6 +62,8 @@ jobs:
     environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Init CI log directory
         if: ${{ inputs.enable-ci-logs }}
@@ -135,15 +137,16 @@ jobs:
       - name: Smoke test
         if: ${{ inputs.smoke-test-url != '' }}
         env:
+          SMOKE_TEST_URL: ${{ inputs.smoke-test-url }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           _run_smoke() {
             status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 \
-              "${{ inputs.smoke-test-url }}" || echo "000")
+              "$SMOKE_TEST_URL" || echo "000")
             echo "Smoke test HTTP status: $status"
             echo "## Smoke Test" >> "$GITHUB_STEP_SUMMARY"
-            echo "Response from \`${{ inputs.smoke-test-url }}\`: **HTTP $status**" >> "$GITHUB_STEP_SUMMARY"
+            echo "Response from \`$SMOKE_TEST_URL\`: **HTTP $status**" >> "$GITHUB_STEP_SUMMARY"
             if [[ "$status" == "000" ]]; then
               echo "::warning::Smoke test: curl failed or timed out"
             else
@@ -183,7 +186,7 @@ jobs:
               'actor': os.environ['META_ACTOR'],
               'event': os.environ['META_EVENT'],
               'job_status': os.environ['META_JOB_STATUS'],
-              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+              'timestamp': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
           }
           with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
               json.dump(meta, f, indent=2)

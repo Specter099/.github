@@ -52,6 +52,12 @@ on:
           ci-log-destination includes 'cloudwatch'.
         type: string
         default: ""
+    secrets:
+      AWS_ROLE_ARN:
+        description: >-
+          IAM role ARN for OIDC federation (required for synth/diff and
+          CI log shipping)
+        required: true
 
 jobs:
   review:
@@ -64,6 +70,8 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Init CI log directory
         if: ${{ inputs.enable-ci-logs }}
@@ -140,6 +148,7 @@ jobs:
           INFRA_DIR: ${{ inputs.infra-dir }}
         run: |
           set -o pipefail
+          pip install pip-audit
           if [ "$ENABLE_LOGS" = "true" ]; then
             pip-audit -r "$INFRA_DIR/requirements.txt" 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
           else
@@ -182,12 +191,20 @@ jobs:
           fi
 
       - name: Comment diff on PR
+        if: github.event_name == 'pull_request'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
         env:
           DIFF: ${{ steps.diff.outputs.diff }}
         with:
           script: |
-            const diff = process.env.DIFF;
+            // GitHub comment bodies are capped at 65536 chars — truncate
+            // large diffs instead of failing the comment API call.
+            const MAX_DIFF = 60000;
+            let diff = process.env.DIFF || '';
+            if (diff.length > MAX_DIFF) {
+              diff = diff.slice(0, MAX_DIFF)
+                + '\n… diff truncated — see the workflow run logs for the full output.';
+            }
             const body = `### CDK Diff\n\n\`\`\`\n${diff}\n\`\`\``;
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
@@ -238,7 +255,7 @@ jobs:
               'actor': os.environ['META_ACTOR'],
               'event': os.environ['META_EVENT'],
               'job_status': os.environ['META_JOB_STATUS'],
-              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+              'timestamp': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
           }
           with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
               json.dump(meta, f, indent=2)
