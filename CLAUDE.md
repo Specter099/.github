@@ -31,9 +31,12 @@ python scripts/check_no_public_access.py --template-dir /path/to/cdk.out
     access-analyzer-check.yml # IAM Access Analyzer public access check
     validate-bucket-names.yml # S3 bucket naming convention enforcement
     gitleaks.yml              # Secret scan (reusable wrapper)
+    self-test.yml             # PR check for this repo (yamllint + pytest)
   actions/
     setup-cdk/action.yml      # Composite: Python 3.12 + Node 22 + CDK CLI
     access-analyzer/action.yml # Composite: scan CFN templates for public access
+    ship-logs/action.yml      # Composite: upload step logs to S3/CloudWatch
+  dependabot.yml              # Weekly bumps for SHA-pinned actions
   PULL_REQUEST_TEMPLATE.md    # Org-wide default PR template (applies to any repo without its own)
 scripts/
   check_no_public_access.py   # CLI for IAM Access Analyzer CheckNoPublicAccess API
@@ -64,6 +67,9 @@ All workflows use `workflow_call` triggers — caller repos reference them with 
 |---|---|---|
 | `AWS_ROLE_ARN` | Environment secret | IAM role ARN for OIDC federation (all AWS workflows) |
 | `BACKUP_S3_BUCKET` | Environment variable | S3 bucket for repo backups (`backup.yml`) |
+| `CDK_CLI_VERSION` | Repository variable | CDK CLI version fallback when the `cdk-version` input is unset |
+| `CI_LOGS_BUCKET` | Repository variable | S3 bucket fallback for CI log shipping (`ship-logs`) |
+| `CI_LOGS_LOG_GROUP` | Repository variable | CloudWatch log group fallback for CI log shipping (`ship-logs`) |
 
 ## Code Style
 

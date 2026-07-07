@@ -94,6 +94,8 @@ jobs:
       # The OIDC credential step itself is gated behind enable-ci-logs.
       id-token: write
       contents: read
+    env:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
     strategy:
       fail-fast: false
       matrix:
@@ -103,6 +105,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
           fetch-depth: 0  # full history required by gitleaks
+          persist-credentials: false
 
       - name: Init CI log directory
         if: ${{ inputs.enable-ci-logs }}
@@ -220,15 +223,19 @@ jobs:
               --cov-fail-under="$COV_THRESHOLD"
           fi
 
+      - name: Log shipping skipped (no AWS_ROLE_ARN)
+        if: always() && inputs.enable-ci-logs && env.AWS_ROLE_ARN == ''
+        run: echo "::warning::AWS_ROLE_ARN secret not set — skipping CI log shipping"
+
       - name: Configure AWS credentials for logging
-        if: always() && inputs.enable-ci-logs
+        if: always() && inputs.enable-ci-logs && env.AWS_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Generate log metadata
-        if: always() && inputs.enable-ci-logs
+        if: always() && inputs.enable-ci-logs && env.AWS_ROLE_ARN != ''
         env:
           META_REPOSITORY: ${{ github.repository }}
           META_WORKFLOW: ${{ github.workflow }}
@@ -252,14 +259,14 @@ jobs:
               'actor': os.environ['META_ACTOR'],
               'event': os.environ['META_EVENT'],
               'job_status': os.environ['META_JOB_STATUS'],
-              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+              'timestamp': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
           }
           with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
               json.dump(meta, f, indent=2)
           "
 
       - name: Ship CI logs
-        if: always() && inputs.enable-ci-logs
+        if: always() && inputs.enable-ci-logs && env.AWS_ROLE_ARN != ''
         uses: Specter099/.github/.github/actions/ship-logs@main
         with:
           log-dir: ${{ runner.temp }}/ci-logs
