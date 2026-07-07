@@ -15,7 +15,7 @@ inputs:
     description: >-
       S3 bucket name. Composite actions cannot read the `vars` context,
       so callers must resolve `vars.CI_LOGS_BUCKET` at the workflow level
-      and pass the result here. The S3 upload step fails if empty.
+      and pass the result here. The S3 upload step warns and skips if empty.
     required: false
     default: ""
   s3-prefix:
@@ -27,7 +27,7 @@ inputs:
       CloudWatch Logs log group name. Composite actions cannot read the
       `vars` context, so callers must resolve `vars.CI_LOGS_LOG_GROUP` at
       the workflow level and pass the result here. The CloudWatch step
-      fails if empty.
+      warns and skips if empty.
     required: false
     default: ""
   aws-region:
@@ -65,8 +65,8 @@ runs:
       run: |
         set -euo pipefail
         if [ -z "$S3_BUCKET" ]; then
-          echo "::error::ship-logs: s3-bucket input is empty. Set vars.CI_LOGS_BUCKET in the calling repo or pass ci-log-s3-bucket explicitly."
-          exit 1
+          echo "::warning::ship-logs: s3-bucket input is empty — skipping S3 log upload. Set vars.CI_LOGS_BUCKET in the calling repo or pass ci-log-s3-bucket explicitly to enable it."
+          exit 0
         fi
         tar czf "${RUNNER_TEMP}/ci-logs.tar.gz" -C "$LOG_DIR" .
         aws s3 cp "${RUNNER_TEMP}/ci-logs.tar.gz" \
@@ -90,8 +90,8 @@ runs:
       run: |
         set -euo pipefail
         if [ -z "$LOG_GROUP" ]; then
-          echo "::error::ship-logs: cloudwatch-log-group input is empty. Set vars.CI_LOGS_LOG_GROUP in the calling repo or pass ci-log-cloudwatch-group explicitly."
-          exit 1
+          echo "::warning::ship-logs: cloudwatch-log-group input is empty — skipping CloudWatch log shipping. Set vars.CI_LOGS_LOG_GROUP in the calling repo or pass ci-log-cloudwatch-group explicitly to enable it."
+          exit 0
         fi
         # Create log group (ignore if exists) with 90-day retention
         aws logs create-log-group \
