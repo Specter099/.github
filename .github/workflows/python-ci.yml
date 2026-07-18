@@ -94,6 +94,10 @@ jobs:
       # The OIDC credential step itself is gated behind enable-ci-logs.
       id-token: write
       contents: read
+      # pull-requests: read lets gitleaks-action list the PR's commits on
+      # pull_request events; without it the scan 403s ("Resource not
+      # accessible by integration").
+      pull-requests: read
     env:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
     strategy:
