@@ -8,8 +8,26 @@ Shared GitHub Actions reusable workflows and composite actions for the Specter09
 
 ## Common Commands
 
+# The pre-commit gate — run this before every commit. Mirrors self-test.yml,
+# so green here means green in CI. ~3s.
+./scripts/local-ci.sh
+
+# ...auto-formatting first, and showing the baselined work list
+./scripts/local-ci.sh --fix
+./scripts/local-ci.sh --strict
+
+# Install it as a git pre-commit hook (bypass with git commit --no-verify)
+./scripts/local-ci.sh --install-hook
+
+# CD-side checks against a caller repo: synth, then bucket names + access analyzer
+./scripts/local-ci.sh --cdk-project ../bitwarden-cdk
+
 # Lint all YAML files
 yamllint -c .yamllint.yml .github/
+
+# Org workflow conventions (also runnable against a caller repo)
+python scripts/check_workflow_invariants.py --list-checks
+python scripts/check_workflow_invariants.py --path ../bitwarden-cdk --strict
 
 # Validate bucket naming script locally
 python scripts/validate_bucket_names.py --path /path/to/cdk/project
@@ -38,9 +56,14 @@ python scripts/check_no_public_access.py --template-dir /path/to/cdk.out
     ship-logs/action.yml      # Composite: upload step logs to S3/CloudWatch
   dependabot.yml              # Weekly bumps for SHA-pinned actions
   PULL_REQUEST_TEMPLATE.md    # Org-wide default PR template (applies to any repo without its own)
+  workflow-invariants-baseline.yml  # Accepted (pre-existing) invariant findings — a work list
 scripts/
+  local-ci.sh                 # The pre-commit gate. Same stages as self-test.yml
+  check_workflow_invariants.py # Org workflow conventions (WF001–WF014)
   check_no_public_access.py   # CLI for IAM Access Analyzer CheckNoPublicAccess API
   validate_bucket_names.py    # AST-based S3 bucket_name= convention checker
+docs/
+  reviews/                    # Point-in-time security/efficiency reviews
 
 ## Architecture
 
@@ -74,4 +97,6 @@ All workflows use `workflow_call` triggers — caller repos reference them with 
 ## Code Style
 
 - YAML: `.yamllint.yml` config — line-length disabled, document-start disabled, truthy allows `on`
-- Python scripts: no formatter config in repo — follow existing style (type hints, argparse CLI, boto3)
+- Python: `ruff.toml` — `ruff format` defaults, and `select = ["E4", "E7", "E9", "F"]` (ruff's stable default set). Beyond that, follow existing style: type hints, argparse CLI, boto3.
+- `ruff` is pinned exactly in `requirements-dev.txt`. It changes its default rule set between minor releases, so an unpinned linter means local and CI enforce different rules — that exact drift turned a green local run red in CI. Bump the pin deliberately and review `ruff.toml` alongside it.
+- Broadening the ruff selection (`I`, `UP`, `RUF`, `SIM` are all reasonable) means fixing the findings that surface, so do it as its own change.

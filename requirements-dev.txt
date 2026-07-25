@@ -1,4 +1,18 @@
 # Dev/test dependencies for this repo's helper scripts and workflow linting.
+# Installed by both scripts/local-ci.sh and .github/workflows/self-test.yml, so
+# a local run and a CI run use the same tools.
 pytest>=8.0
 boto3>=1.34
-yamllint>=1.35
+PyYAML>=6.0
+# Pinned exactly, same reasoning as ruff: version drift in a linter means local
+# and CI report different findings.
+yamllint==1.35.1
+# Pinned exactly, not >=: ruff changes its default rule set between minor
+# releases, and an unpinned linter means local and CI enforce different rules.
+# Bump deliberately, with ruff.toml reviewed alongside.
+ruff==0.16.0
+# Static security audit for GitHub Actions. Left unpinned deliberately, unlike
+# ruff above: zizmor is advisory in the gate, so a new rule in a new release
+# surfaces as information and can never turn CI red. Getting new audits for free
+# is the point.
+zizmor>=1.28

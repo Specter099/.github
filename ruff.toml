@@ -1,0 +1,23 @@
+# Explicit ruff configuration.
+#
+# Without this file, `ruff check` enforces whatever the installed version
+# happens to default to — and that default changes between releases. Going from
+# 0.15 to 0.16 turned on RUF059, UP031, EXE001, PLW1510 and others, which turned
+# a green local run into a red CI run on code nobody had touched. Pinning the
+# version in requirements-dev.txt fixes the immediate divergence; declaring the
+# rule set here is what stops the next bump from moving the goalposts again.
+#
+# This is deliberately ruff's documented *stable default* selection, which is
+# what the existing code was written against. Broadening it (I, UP, RUF, SIM are
+# all reasonable next steps) means fixing the findings that appear, so it belongs
+# in its own change rather than riding along with a tooling PR.
+
+target-version = "py312"
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+[format]
+# Match the default explicitly rather than inheriting it.
+quote-style = "double"
+indent-style = "space"

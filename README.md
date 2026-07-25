@@ -192,6 +192,94 @@ jobs:
 
 ---
 
+## Local development
+
+Run the gate before committing. It executes the same stages as
+`.github/workflows/self-test.yml`, so a green run locally means a green check on
+the PR — and it takes about three seconds.
+
+```bash
+pip install -r requirements-dev.txt
+./scripts/local-ci.sh
+```
+
+| Flag | What it does |
+|------|--------------|
+| *(none)* | yamllint, ruff, pytest, workflow invariants, actionlint; zizmor advisory |
+| `--fix` | `ruff format` first, then the gate |
+| `--strict` | Ignore the invariants baseline — shows the outstanding work list |
+| `--fast` | Explicitly opt out of `zizmor` and `actionlint` (skipped, not missing) |
+| `--cdk-project DIR` | Also run the CD-side checks against a caller repo (below) |
+| `--act` | Execute `self-test.yml` locally under [`act`](https://github.com/nektos/act) (needs Docker) |
+| `--install-hook` | Install as `.git/hooks/pre-commit` (bypass with `git commit --no-verify`) |
+
+Stages come in three kinds, and the distinction is load-bearing:
+
+- **required** — `yamllint`, `ruff`, `pytest`, workflow invariants, `actionlint`.
+  These are what CI runs. If one *cannot* run because its tool is absent, the
+  verdict is **INCOMPLETE** (exit 1), never PASS. An earlier version skipped a
+  missing `yamllint` and still printed "Safe to commit", which reproduced the
+  very local/CI divergence the gate exists to prevent — "I didn't check" is not
+  "it's fine".
+- **advisory** — `zizmor`, `act`. Report findings, never block.
+- **optional** — `cdk`, `aws`. Only used by the CD stages; skipped when absent.
+
+`actionlint` is auto-installed via `go install` at a pinned version when Go is
+present; if one is already on `PATH` at a different version, the gate says so,
+since two versions report different findings. Use `--fast` to opt out of
+`zizmor` and `actionlint` explicitly — an explicit opt-out counts as skipped
+rather than missing, so PASS is still reachable.
+
+Python tools are invoked as `python3 -m ruff` / `python3 -m pytest` rather than
+via a bare command, and `ruff` is pinned exactly in `requirements-dev.txt`.
+Both are load-bearing: a `ruff` shadowed earlier on `PATH` was a different
+version with a different default rule set than the one `pip` installed, which is
+the "green locally, red in CI" divergence this gate exists to prevent.
+`ruff.toml` then declares the rule set explicitly so a version bump can't move
+the goalposts silently.
+
+### Testing the CD path
+
+A deploy can't be genuinely rehearsed locally — it needs AWS and a real CDK app.
+What `--cdk-project` does instead is run the checks `cdk-review` would run,
+against a real synthesized template tree:
+
+```bash
+./scripts/local-ci.sh --cdk-project ../bitwarden-cdk
+```
+
+That runs `cdk synth`, then validates bucket names against both the Python
+source and the synthesized templates, then runs the IAM Access Analyzer check —
+which needs real credentials and is skipped with a notice if `aws sts
+get-caller-identity` fails. It also runs the workflow invariants against the
+caller repo, which is where trigger-convention violations tend to live.
+
+### Workflow invariants
+
+`scripts/check_workflow_invariants.py` enforces the conventions in this document
+that no off-the-shelf linter knows about — undeclared `workflow_call` secrets,
+unpinned internal actions, `pull_request_target`, script injection into `run:`,
+checks leaking into deploy workflows, README examples passing inputs that don't
+exist. `--list-checks` prints all of them.
+
+Findings that predate the checker are accepted in
+`.github/workflow-invariants-baseline.yml`. That file is a **work list, not a
+suppression list**: each entry cites the review finding it corresponds to, and
+deleting an entry is how you claim the fix. A test asserts the baseline contains
+no stale entries, so fixing something forces its entry out and a later
+regression has nothing left to hide behind.
+
+**New violations fail the gate at every severity, baselined ones don't.** The
+gate always passes `--fail-on-warn`, so a newly-introduced `warn` finding blocks
+just as an `error` does — the severities rank importance, they don't decide what
+blocks. This matters because WF004 (mutable internal `@main`) and WF007
+(forgeable `GITHUB_OUTPUT` delimiter) are `warn`, and those are two of the
+security findings the review pins down; leaving them advisory in the mode CI
+runs would have let a fresh violation of either through the required check.
+Running the checker directly without `--fail-on-warn` is the lenient mode.
+
+---
+
 ## Composite Actions
 
 ### `setup-cdk`
