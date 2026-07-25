@@ -13,9 +13,14 @@
 #   ./scripts/local-ci.sh --cdk-project ../bitwarden-cdk
 #   ./scripts/local-ci.sh --install-hook       # wire up as a pre-commit hook
 #
-# Exit 0 only if every required stage passed. Advisory stages report but never
-# block. Missing optional tools SKIP with an install hint rather than failing,
-# so a fresh clone is usable immediately.
+# Exit 0 only if every required stage actually ran and passed.
+#   required  yamllint, ruff, pytest, workflow invariants, actionlint — these are
+#             what CI runs. If one cannot run because its tool is absent, the
+#             verdict is INCOMPLETE (exit 1), never PASS: "I did not check" is
+#             not "it is fine", and claiming otherwise recreates the local/CI
+#             divergence this gate exists to prevent.
+#   advisory  zizmor, act — report findings, never block.
+#   optional  cdk, aws — only used by the CD stages, skipped when absent.
 
 # pipefail only, deliberately no `-u`: under `set -u`, bash 3.2 — still
 # /bin/bash on macOS — treats `${#arr[@]}` on an empty array as an unbound
@@ -41,10 +46,13 @@ usage() {
 Options:
   --fix               auto-fix what is mechanically fixable (ruff format)
   --strict            invariants: ignore the baseline and show every finding
-  --fast              skip the slower advisory stages (zizmor)
+  --fast              skip zizmor and actionlint, as an explicit opt-out
+                      (they count as skipped, not missing, so PASS is possible)
   --cdk-project DIR   also run the CD-side checks against a CDK project
   --act               execute self-test.yml locally under `act` (needs Docker)
-  --format github     emit ::error/::warning annotations (for use in CI)
+  --format github     emit ::error/::warning annotations from the stages that
+                      support them (yamllint, ruff, invariants); pytest output
+                      stays plain text. Exit codes are unaffected.
   --install-hook      install this script as .git/hooks/pre-commit
   --quiet             only print the summary and failures
   -h, --help          this text
@@ -66,7 +74,15 @@ while [ $# -gt 0 ]; do
       cat > "$hook" <<'HOOK'
 #!/usr/bin/env bash
 # Installed by scripts/local-ci.sh --install-hook
-exec "$(git rev-parse --show-toplevel)/scripts/local-ci.sh" --quiet
+root="$(git rev-parse --show-toplevel)"
+# This gate runs against the WORKING TREE, not the staged index. Auto-stashing
+# to isolate the index can lose work when a hook is interrupted, so instead we
+# say so plainly when the two differ — then a green gate is not misread as
+# "exactly what I am committing is green".
+if ! git diff --quiet; then
+  printf 'local-ci: note — unstaged changes present, so this gate checked the working tree, not just what is staged.\n' >&2
+fi
+exec "$root/scripts/local-ci.sh" --quiet
 HOOK
       chmod +x "$hook"
       echo "Installed pre-commit hook → $hook"
@@ -87,7 +103,7 @@ else
   BOLD=""; RED=""; GREEN=""; YELLOW=""; DIM=""; RESET=""
 fi
 
-FAILED=() PASSED=() SKIPPED=() ADVISORY=()
+FAILED=() PASSED=() SKIPPED=() ADVISORY=() MISSING=()
 START=$SECONDS
 
 say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
@@ -115,9 +131,23 @@ run() {
   return 0
 }
 
+# Two kinds of not-run, and conflating them was a real bug: the gate printed
+# "PASS — Safe to commit" having never run yamllint or actionlint, both of which
+# CI *does* run. A missing optional tool is fine; a missing required one means
+# the gate did not actually run, and it must not claim otherwise.
+#
+# skip     — optional stage (zizmor, act, cdk) or an explicit --fast opt-out.
+#            Verdict stays PASS.
+# missing  — required stage whose tool is absent. Verdict becomes INCOMPLETE and
+#            the exit code is non-zero, because "I didn't check" is not "it's fine".
 skip() {
   SKIPPED+=("$1")
   say "${DIM}∅ $1 — $2${RESET}"
+}
+
+missing() {
+  MISSING+=("$1")
+  printf '%s⚠%s %s — required stage not run: %s\n' "$YELLOW" "$RESET" "$1" "$2"
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -149,12 +179,22 @@ hdr "CI"
 
 if [ "$FIX" = 1 ] && python3 -c 'import ruff' 2>/dev/null; then
   run "ruff format (--fix)" required python3 -m ruff format scripts/ tests/
+  # The format --check stage below will now pass by construction, so flag that
+  # files on disk changed and are not staged — otherwise PASS reads as "nothing
+  # needed doing".
+  if ! git diff --quiet -- scripts/ tests/ 2>/dev/null; then
+    say "${YELLOW}  note:${RESET} --fix rewrote files; they are unstaged. Review with: git diff scripts/ tests/"
+  fi
 fi
 
+# yamllint is a hard dependency (pinned in requirements-dev.txt and run by CI),
+# not an optional extra — its absence is `missing`, not `skip`.
 if have yamllint; then
-  run "yamllint" required yamllint -c .yamllint.yml .github/
+  YAMLLINT_ARGS=(-c .yamllint.yml)
+  [ "$FORMAT" = "github" ] && YAMLLINT_ARGS+=(-f github)
+  run "yamllint" required yamllint "${YAMLLINT_ARGS[@]}" .github/
 else
-  skip "yamllint" "pip install -r requirements-dev.txt"
+  missing "yamllint" "pip install -r requirements-dev.txt"
 fi
 
 # Same `python3 -m` reasoning as pytest below, and it bit harder here: a
@@ -162,13 +202,12 @@ fi
 # findings, because the two ship different default rule sets. ruff.toml now
 # declares the rules; this makes sure the pinned binary is the one applying them.
 if python3 -c 'import ruff' 2>/dev/null; then
-  run "ruff check" required python3 -m ruff check scripts/ tests/
+  RUFF_ARGS=()
+  [ "$FORMAT" = "github" ] && RUFF_ARGS+=(--output-format=github)
+  run "ruff check" required python3 -m ruff check "${RUFF_ARGS[@]}" scripts/ tests/
   run "ruff format --check" required python3 -m ruff format --check scripts/ tests/
-elif have ruff; then
-  run "ruff check" required ruff check scripts/ tests/
-  run "ruff format --check" required ruff format --check scripts/ tests/
 else
-  skip "ruff" "pip install -r requirements-dev.txt"
+  missing "ruff" "pip install -r requirements-dev.txt"
 fi
 
 # Invoke via `python3 -m` so the tests run against the same interpreter that
@@ -176,27 +215,47 @@ fi
 if python3 -c 'import pytest' 2>/dev/null; then
   run "pytest" required python3 -m pytest tests/ -q
 else
-  skip "pytest" "pip install -r requirements-dev.txt"
+  missing "pytest" "pip install -r requirements-dev.txt"
 fi
 
-INV_ARGS=(--format "$FORMAT")
-[ "$STRICT" = 1 ] && INV_ARGS+=(--strict --fail-on-warn)
+# --fail-on-warn is unconditional. Without it, WF004 (mutable internal @main),
+# WF007 (forgeable GITHUB_OUTPUT delimiter), WF008 and WF011 were advisory-only
+# in the mode CI actually runs, so a brand-new violation of any of them passed
+# the required check while the README claimed new violations fail. Baselined
+# findings are exempt by fingerprint regardless of severity, so this does not
+# resurrect the 25 accepted ones. --strict additionally ignores the baseline.
+INV_ARGS=(--format "$FORMAT" --fail-on-warn)
+[ "$STRICT" = 1 ] && INV_ARGS+=(--strict)
 run "workflow invariants" required \
   python3 scripts/check_workflow_invariants.py "${INV_ARGS[@]}"
 
+# Pinned for the same reason ruff is: a linter whose version differs between
+# local and CI enforces different rules in each. We cannot force the version of
+# an actionlint already on PATH, but we can say so out loud when it differs from
+# what CI installs, rather than letting the drift be silent.
+ACTIONLINT_VERSION="v1.7.7"
+
 if have actionlint; then
+  actual="$(actionlint --version 2>/dev/null | head -1)"
+  case "$actual" in
+    "${ACTIONLINT_VERSION#v}"|"$ACTIONLINT_VERSION") : ;;
+    *) say "${YELLOW}  note:${RESET} actionlint on PATH is ${actual:-unknown}, CI uses ${ACTIONLINT_VERSION} — findings may differ" ;;
+  esac
   run "actionlint" required actionlint -no-color -shellcheck= .github/workflows/*.yml
 elif have go && [ "$FAST" = 0 ]; then
   say "${DIM}  installing actionlint (one-off, via go install)...${RESET}"
   if GOBIN="$(go env GOPATH)/bin" go install \
-       github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 >/dev/null 2>&1; then
+       "github.com/rhysd/actionlint/cmd/actionlint@$ACTIONLINT_VERSION" >/dev/null 2>&1; then
     export PATH="$(go env GOPATH)/bin:$PATH"
     run "actionlint" required actionlint -no-color -shellcheck= .github/workflows/*.yml
   else
-    skip "actionlint" "go install github.com/rhysd/actionlint/cmd/actionlint@latest"
+    missing "actionlint" "go install github.com/rhysd/actionlint/cmd/actionlint@$ACTIONLINT_VERSION"
   fi
+elif [ "$FAST" = 1 ]; then
+  # An explicit --fast opt-out is a choice, not an absent dependency.
+  skip "actionlint" "--fast"
 else
-  skip "actionlint" "go install github.com/rhysd/actionlint/cmd/actionlint@latest"
+  missing "actionlint" "go install github.com/rhysd/actionlint/cmd/actionlint@$ACTIONLINT_VERSION"
 fi
 
 # zizmor is advisory: the repo currently has known findings (see
@@ -277,11 +336,22 @@ printf '  passed   %d\n' "${#PASSED[@]}"
   "${#ADVISORY[@]}" "$YELLOW" "$(IFS=', '; echo "${ADVISORY[*]}")" "$RESET"
 [ "${#SKIPPED[@]}" -gt 0 ] && printf '  skipped  %d  %s(%s)%s\n' \
   "${#SKIPPED[@]}" "$DIM" "$(IFS=', '; echo "${SKIPPED[*]}")" "$RESET"
+[ "${#MISSING[@]}" -gt 0 ] && printf '  missing  %d  %s(%s)%s\n' \
+  "${#MISSING[@]}" "$YELLOW" "$(IFS=', '; echo "${MISSING[*]}")" "$RESET"
 [ "${#FAILED[@]}" -gt 0 ] && printf '  failed   %d  %s(%s)%s\n' \
   "${#FAILED[@]}" "$RED" "$(IFS=', '; echo "${FAILED[*]}")" "$RESET"
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
   printf '\n%sFAIL%s — %ds. Fix the above before committing.\n' "$RED" "$RESET" "$ELAPSED"
+  exit 1
+fi
+# A required stage that never ran is not a pass. Saying "Safe to commit" here
+# would reproduce exactly the local/CI divergence this gate exists to prevent:
+# CI installs these tools and will run those stages whether or not you did.
+if [ "${#MISSING[@]}" -gt 0 ]; then
+  printf '\n%sINCOMPLETE%s — %ds. %d required stage(s) never ran; CI will still run them.\n' \
+    "$YELLOW" "$RESET" "$ELAPSED" "${#MISSING[@]}"
+  printf 'Install the missing tools (see hints above), or re-run with --fast to opt out explicitly.\n'
   exit 1
 fi
 printf '\n%sPASS%s — %ds. Safe to commit.\n' "$GREEN" "$RESET" "$ELAPSED"

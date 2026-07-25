@@ -213,9 +213,22 @@ pip install -r requirements-dev.txt
 | `--act` | Execute `self-test.yml` locally under [`act`](https://github.com/nektos/act) (needs Docker) |
 | `--install-hook` | Install as `.git/hooks/pre-commit` (bypass with `git commit --no-verify`) |
 
-Missing optional tools (`actionlint`, `zizmor`, `act`, `cdk`) are **skipped with
-an install hint** rather than failing, so a fresh clone is usable straight away.
-`actionlint` is auto-installed via `go install` when Go is present.
+Stages come in three kinds, and the distinction is load-bearing:
+
+- **required** — `yamllint`, `ruff`, `pytest`, workflow invariants, `actionlint`.
+  These are what CI runs. If one *cannot* run because its tool is absent, the
+  verdict is **INCOMPLETE** (exit 1), never PASS. An earlier version skipped a
+  missing `yamllint` and still printed "Safe to commit", which reproduced the
+  very local/CI divergence the gate exists to prevent — "I didn't check" is not
+  "it's fine".
+- **advisory** — `zizmor`, `act`. Report findings, never block.
+- **optional** — `cdk`, `aws`. Only used by the CD stages; skipped when absent.
+
+`actionlint` is auto-installed via `go install` at a pinned version when Go is
+present; if one is already on `PATH` at a different version, the gate says so,
+since two versions report different findings. Use `--fast` to opt out of
+`zizmor` and `actionlint` explicitly — an explicit opt-out counts as skipped
+rather than missing, so PASS is still reachable.
 
 Python tools are invoked as `python3 -m ruff` / `python3 -m pytest` rather than
 via a bare command, and `ruff` is pinned exactly in `requirements-dev.txt`.
@@ -252,9 +265,18 @@ exist. `--list-checks` prints all of them.
 Findings that predate the checker are accepted in
 `.github/workflow-invariants-baseline.yml`. That file is a **work list, not a
 suppression list**: each entry cites the review finding it corresponds to, and
-deleting an entry is how you claim the fix. New violations fail the gate even
-while old ones are tolerated, and a test asserts the baseline contains no stale
-entries.
+deleting an entry is how you claim the fix. A test asserts the baseline contains
+no stale entries, so fixing something forces its entry out and a later
+regression has nothing left to hide behind.
+
+**New violations fail the gate at every severity, baselined ones don't.** The
+gate always passes `--fail-on-warn`, so a newly-introduced `warn` finding blocks
+just as an `error` does — the severities rank importance, they don't decide what
+blocks. This matters because WF004 (mutable internal `@main`) and WF007
+(forgeable `GITHUB_OUTPUT` delimiter) are `warn`, and those are two of the
+security findings the review pins down; leaving them advisory in the mode CI
+runs would have let a fresh violation of either through the required check.
+Running the checker directly without `--fail-on-warn` is the lenient mode.
 
 ---
 

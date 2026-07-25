@@ -225,21 +225,41 @@ def check_checkout(src: Source) -> list[Finding]:
     return out
 
 
+def _pin_finding(src: Source, uses: str, context: str) -> Finding | None:
+    """Classify a single `uses:` value, or None if it needs no pin."""
+    uses = uses.strip()
+    if not uses or uses.startswith("./") or uses.startswith("docker://"):
+        return None
+    if "@" not in uses:
+        return Finding("WF003", src.rel, line_of(src.text, uses), f"{uses}{context}")
+    repo, ref = uses.rsplit("@", 1)
+    if SHA_RE.match(ref):
+        return None
+    check = "WF004" if repo.startswith(INTERNAL_PREFIX) else "WF003"
+    return Finding(check, src.rel, line_of(src.text, uses), f"{repo}@{ref}{context}")
+
+
 def check_pinning(src: Source) -> list[Finding]:
     """WF003 third-party pinned by SHA, WF004 internal pinned too."""
     out = []
     for _job, step in action_steps(src.doc):
-        uses = str(step.get("uses", "")).strip()
-        if not uses or uses.startswith("./") or uses.startswith("docker://"):
+        f = _pin_finding(src, str(step.get("uses", "")), "")
+        if f:
+            out.append(f)
+
+    # Job-level `uses:` — a reusable-workflow call. This is the highest-privilege
+    # composition in Actions, because it is the one that can carry
+    # `secrets: inherit`, yet it lives on the job rather than in `steps:` and so
+    # was previously invisible to the step walk above. An unpinned third-party
+    # reusable workflow here is strictly worse than an unpinned step action.
+    for name, job in jobs(src.doc).items():
+        if not isinstance(job, dict) or "uses" not in job:
             continue
-        if "@" not in uses:
-            out.append(Finding("WF003", src.rel, line_of(src.text, uses), uses))
-            continue
-        repo, ref = uses.rsplit("@", 1)
-        if SHA_RE.match(ref):
-            continue
-        check = "WF004" if repo.startswith(INTERNAL_PREFIX) else "WF003"
-        out.append(Finding(check, src.rel, line_of(src.text, uses), f"{repo}@{ref}"))
+        f = _pin_finding(
+            src, str(job["uses"]), f" (reusable workflow call in job '{name}')"
+        )
+        if f:
+            out.append(f)
 
     # A checkout of another repo without an explicit ref is the same mutable
     # dependency as `uses: ...@main`, and easier to miss.
@@ -297,9 +317,22 @@ def check_triggers(src: Source) -> list[Finding]:
                 "pull_request_target grants a write token to fork-authored code",
             )
         )
-    push = trig.get("push")
-    push_branches = (push or {}).get("branches", []) if isinstance(push, dict) else []
-    if "pull_request" in trig and "main" in (push_branches or []):
+    # WF014 has to treat three spellings of "also fires on main" as equivalent:
+    #   push: {branches: [main]}  — explicit
+    #   push:                     — no filter at all, so it fires on every branch
+    #                               including main (this is the easy one to miss)
+    #   on: [pull_request, push]  — list form, which triggers() maps to push=None
+    # Only an explicit branch list that excludes main is exempt.
+    push_fires_on_main = False
+    if "push" in trig:
+        push = trig["push"]
+        if isinstance(push, dict):
+            branches = push.get("branches")
+            # A filter naming other branches is fine; no filter means all branches.
+            push_fires_on_main = branches is None or "main" in branches
+        else:
+            push_fires_on_main = True
+    if "pull_request" in trig and push_fires_on_main:
         out.append(
             Finding(
                 "WF014",

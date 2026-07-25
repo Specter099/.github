@@ -670,3 +670,162 @@ def test_every_check_id_has_a_rationale():
     for cid, (sev, why) in ci.CHECKS.items():
         assert sev in {"error", "warn"}, cid
         assert why and len(why) < 100, cid
+
+
+# ---------------------------------------------------------------------------
+# Regression guards for the bypasses found in adversarial review of PR #138.
+# Each of these passed the checker before the fix, so they are the tests that
+# would have caught the gap.
+# ---------------------------------------------------------------------------
+
+
+def _caller(uses: str) -> str:
+    """A workflow whose only job is a reusable-workflow call."""
+    return wf(f"""
+        name: Caller
+        on:
+          pull_request:
+            branches: [main]
+        jobs:
+          call:
+            uses: {uses}
+            secrets: inherit
+    """)
+
+
+def test_wf003_flags_unpinned_third_party_reusable_workflow_call(tmp_path):
+    """Job-level `uses:` was invisible to the step walk, so an unpinned
+    third-party reusable workflow — the one composition that can carry
+    `secrets: inherit` — passed even under --strict --fail-on-warn."""
+    write_workflow(
+        tmp_path,
+        "c.yml",
+        _caller("some-rando/malicious/.github/workflows/pwn.yml@main"),
+    )
+    hits = [f for f in findings_for(tmp_path) if f.check == "WF003"]
+    assert hits, "unpinned third-party reusable workflow call not flagged"
+    assert "reusable workflow call" in hits[0].detail
+
+
+def test_wf004_flags_internal_reusable_workflow_call_at_main(tmp_path):
+    write_workflow(
+        tmp_path,
+        "c.yml",
+        _caller("Specter099/.github/.github/workflows/python-ci.yml@main"),
+    )
+    hit = checks_hit(tmp_path)
+    assert "WF004" in hit and "WF003" not in hit
+
+
+def test_sha_pinned_reusable_workflow_call_is_accepted(tmp_path):
+    write_workflow(
+        tmp_path, "c.yml", _caller(f"some-org/repo/.github/workflows/x.yml@{'c' * 40}")
+    )
+    hit = checks_hit(tmp_path)
+    assert "WF003" not in hit and "WF004" not in hit
+
+
+def test_local_reusable_workflow_call_is_accepted(tmp_path):
+    write_workflow(tmp_path, "c.yml", _caller("./.github/workflows/other.yml"))
+    hit = checks_hit(tmp_path)
+    assert "WF003" not in hit and "WF004" not in hit
+
+
+def _triggers_wf(on_block: str) -> str:
+    return wf(f"""
+        name: S
+        {on_block}
+        jobs:
+          s:
+            runs-on: ubuntu-latest
+            timeout-minutes: 5
+            permissions:
+              contents: read
+            steps:
+              - run: echo hi
+    """)
+
+
+def test_wf014_flags_bare_push_with_no_branch_filter(tmp_path):
+    """`push:` with no filter fires on every branch including main, so it
+    double-runs at merge just like `push: {branches: [main]}`."""
+    write_workflow(
+        tmp_path,
+        "s.yml",
+        _triggers_wf(
+            "on:\n          pull_request:\n            branches: [main]\n          push:"
+        ),
+    )
+    assert "WF014" in checks_hit(tmp_path)
+
+
+def test_wf014_flags_list_form_triggers(tmp_path):
+    """`on: [pull_request, push]` — the list form maps push to None."""
+    write_workflow(tmp_path, "s.yml", _triggers_wf("on: [pull_request, push]"))
+    assert "WF014" in checks_hit(tmp_path)
+
+
+def test_wf014_allows_push_restricted_to_other_branches(tmp_path):
+    """An explicit filter that excludes main is the legitimate case."""
+    write_workflow(
+        tmp_path,
+        "s.yml",
+        _triggers_wf(
+            "on:\n          pull_request:\n            branches: [main]\n"
+            "          push:\n            branches: [release/**]"
+        ),
+    )
+    assert "WF014" not in checks_hit(tmp_path)
+
+
+def test_gate_runs_the_checker_with_fail_on_warn():
+    """The gate must not leave warn-severity checks advisory.
+
+    WF004 (mutable internal @main) and WF007 (forgeable GITHUB_OUTPUT
+    delimiter) are `warn`. Without --fail-on-warn they were advisory-only in
+    the mode self-test.yml runs, so a brand-new violation of either passed the
+    required check while the README promised new violations fail. This asserts
+    the flag is unconditional rather than tied to --strict.
+    """
+    gate = (REPO_ROOT / "scripts" / "local-ci.sh").read_text(encoding="utf-8")
+    inv_line = next(
+        line for line in gate.splitlines() if line.strip().startswith("INV_ARGS=(")
+    )
+    assert "--fail-on-warn" in inv_line, (
+        "local-ci.sh must pass --fail-on-warn unconditionally; found: " + inv_line
+    )
+
+
+def test_warn_findings_block_once_fail_on_warn_is_set(tmp_path):
+    """End-to-end via the CLI: a warn-only finding is exit 0 by default and
+    exit 1 with --fail-on-warn, so the gate's flag is what makes it bite."""
+    write_workflow(
+        tmp_path,
+        "cdk-review.yml",
+        swap(PINNED, "Specter099/.github/.github/actions/setup-cdk@main"),
+    )
+    base = [sys.executable, str(SCRIPT), "--path", str(tmp_path)]
+    lenient = subprocess.run(base, capture_output=True, text=True)
+    strict = subprocess.run([*base, "--fail-on-warn"], capture_output=True, text=True)
+    assert lenient.returncode == 0, lenient.stdout
+    assert strict.returncode == 1, strict.stdout
+
+
+def test_wf014_flags_push_dict_without_a_branches_key(tmp_path):
+    """`push:` as a mapping with only a path/tag filter and no `branches:` still
+    fires on every branch, main included — a PR touching src/** runs the check,
+    then the merge push to main runs it again.
+
+    Distinct from the bare `push:` case above: that one parses to None and takes
+    the non-mapping path. This one is a dict whose `branches` is absent, and
+    mutation testing showed the bare-push test did not cover it.
+    """
+    write_workflow(
+        tmp_path,
+        "s.yml",
+        _triggers_wf(
+            "on:\n          pull_request:\n            branches: [main]\n"
+            "          push:\n            paths: ['src/**']"
+        ),
+    )
+    assert "WF014" in checks_hit(tmp_path)
