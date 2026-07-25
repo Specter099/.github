@@ -80,6 +80,10 @@ CHECKS: dict[str, tuple[str, str]] = {
 FAIL_SEVERITIES = {"error"}
 
 
+class BaselineError(Exception):
+    """The baseline file exists but could not be understood."""
+
+
 @dataclass
 class Finding:
     check: str
@@ -333,7 +337,7 @@ def _push_fires_on_main(trig: dict) -> bool:
         return True
 
     ignore = push.get("branches-ignore")
-    if ignore and any(fnmatch(MAIN, str(p)) for p in ignore):
+    if ignore and _matches(MAIN, ignore):
         return False
 
     branches = push.get("branches")
@@ -342,8 +346,25 @@ def _push_fires_on_main(trig: dict) -> bool:
         # anything else (paths, no filter at all) fires on every branch.
         tag_only = any(k in push for k in ("tags", "tags-ignore"))
         return not tag_only
-    # Entries may be globs, so a literal membership test is not enough.
-    return any(fnmatch(MAIN, str(p)) for p in branches)
+    return _matches(MAIN, branches)
+
+
+def _matches(name: str, patterns) -> bool:
+    """Does `name` survive a GitHub branch/tag filter list?
+
+    Entries are globs and may be negated with a leading `!`; later entries
+    override earlier ones, so `["**", "!main"]` means "every branch except
+    main". Evaluating in order is what distinguishes that from `["**"]`.
+    """
+    included = False
+    for raw in patterns:
+        pat = str(raw)
+        if pat.startswith("!"):
+            if fnmatch(name, pat[1:]):
+                included = False
+        elif fnmatch(name, pat):
+            included = True
+    return included
 
 
 def check_triggers(src: Source) -> list[Finding]:
@@ -591,14 +612,25 @@ def load_baseline(path: Path) -> tuple[dict[str, int], dict]:
     """
     if not path.is_file():
         return {}, {}
-    doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    counts: dict[str, int] = {}
-    for a in doc.get("accepted") or []:
-        if "fingerprint" not in a:
-            continue
-        fp = str(a["fingerprint"])
-        counts[fp] = counts.get(fp, 0) + int(a.get("count", 1))
-    return counts, doc
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(doc, dict):
+            raise ValueError("top level is not a mapping")
+        counts: dict[str, int] = {}
+        for a in doc.get("accepted") or []:
+            if not isinstance(a, dict) or "fingerprint" not in a:
+                continue
+            fp = str(a["fingerprint"])
+            n = int(a.get("count", 1))
+            if n < 1:
+                raise ValueError(f"count must be >= 1, got {n!r} for {fp}")
+            counts[fp] = counts.get(fp, 0) + n
+        return counts, doc
+    except (yaml.YAMLError, ValueError, TypeError, AttributeError) as exc:
+        # Fail closed and legibly. Silently ignoring a broken baseline would
+        # accept nothing and bury the reason in a wall of findings; a traceback
+        # is correct-but-unreadable. Exit 2 is the documented "could not run".
+        raise BaselineError(f"{path}: {exc}") from exc
 
 
 def main() -> int:
@@ -649,7 +681,11 @@ def main() -> int:
         if args.baseline
         else root / ".github" / "workflow-invariants-baseline.yml"
     )
-    accepted, _ = ({}, {}) if args.strict else load_baseline(baseline_path)
+    try:
+        accepted, _ = ({}, {}) if args.strict else load_baseline(baseline_path)
+    except BaselineError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     # Consume the per-fingerprint budget in order; findings past it are new.
     remaining = dict(accepted)
     for f in findings:

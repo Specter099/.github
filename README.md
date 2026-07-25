@@ -208,7 +208,7 @@ pip install -r requirements-dev.txt
 | *(none)* | yamllint, ruff, pytest, workflow invariants, actionlint; zizmor advisory |
 | `--fix` | `ruff format` first, then the gate |
 | `--strict` | Ignore the invariants baseline — shows the outstanding work list |
-| `--fast` | Skip the slower advisory stages |
+| `--fast` | Explicitly opt out of `zizmor` and `actionlint` (skipped, not missing) |
 | `--cdk-project DIR` | Also run the CD-side checks against a caller repo (below) |
 | `--act` | Execute `self-test.yml` locally under [`act`](https://github.com/nektos/act) (needs Docker) |
 | `--install-hook` | Install as `.git/hooks/pre-commit` (bypass with `git commit --no-verify`) |

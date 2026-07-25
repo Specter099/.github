@@ -283,8 +283,13 @@ if [ -n "$CDK_PROJECT" ]; then
 
     # Mirror the caller-repo invariants too — the trigger-convention and
     # secrets checks are most useful pointed at a caller.
+    # --fail-on-warn for the same reason the CI-side stage has it and the
+    # analyzer stage dropped --no-fail-on-public-access: warn-only findings would
+    # exit 0, and `run` discards the output of anything exiting 0, so WF004 and
+    # WF007 against a caller repo vanished behind a green tick. `advisory` is what
+    # keeps this from blocking; the exit code is what makes it visible.
     run "caller-repo invariants" advisory \
-      python3 scripts/check_workflow_invariants.py --path "$CDK_ABS" --strict
+      python3 scripts/check_workflow_invariants.py --path "$CDK_ABS" --strict --fail-on-warn
 
     if have cdk; then
       run "cdk synth" required in_dir "$CDK_ABS" cdk synth --quiet
@@ -357,7 +362,7 @@ fi
 if [ "${#MISSING[@]}" -gt 0 ]; then
   printf '\n%sINCOMPLETE%s — %ds. %d required stage(s) never ran; CI will still run them.\n' \
     "$YELLOW" "$RESET" "$ELAPSED" "${#MISSING[@]}"
-  printf 'Install the missing tools (see hints above), or re-run with --fast to opt out explicitly.\n'
+  printf 'Install the missing tools (see hints above). --fast opts out of actionlint\nand zizmor only; yamllint, ruff and pytest all come from requirements-dev.txt.\n'
   exit 1
 fi
 printf '\n%sPASS%s — %ds. Safe to commit.\n' "$GREEN" "$RESET" "$ELAPSED"

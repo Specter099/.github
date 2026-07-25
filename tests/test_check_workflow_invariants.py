@@ -9,6 +9,7 @@ crafted violation that it must catch, plus a clean counterpart it must not flag.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -949,6 +950,60 @@ def test_baseline_count_stops_a_duplicate_new_violation(tmp_path):
 GATE = (REPO_ROOT / "scripts" / "local-ci.sh").read_text(encoding="utf-8")
 
 
+def test_no_gate_stage_mutes_a_findings_exit_code():
+    """Class-level guard, not instance-level.
+
+    Both blocking bugs in adversarial review were the same shape: a stage that
+    reported a real finding while exiting 0, so `run()` printed ✓ and discarded
+    the output. It happened twice — once with --no-fail-on-public-access on the
+    analyzer stage, then again with a missing --fail-on-warn on the caller-repo
+    invariants stage — because the first fix addressed the instance. This asserts
+    the property over *every* invocation of either script in the gate.
+    """
+    muting = {
+        "check_no_public_access.py": ("--no-fail-on-public-access", False),
+        "check_workflow_invariants.py": ("--fail-on-warn", True),
+    }
+    lines = GATE.splitlines()
+
+    def effective_args(line: str) -> str:
+        """The line's arguments, following one level of array indirection.
+
+        The CI-side stage passes its flags via "${INV_ARGS[@]}", so checking the
+        invocation line alone would wrongly report it as unflagged. Resolve any
+        referenced array to the lines that build it.
+        """
+        text = line
+        for var in re.findall(r"\$\{(\w+)\[@\]\}", line):
+            text += " " + " ".join(
+                candidate
+                for candidate in lines
+                if candidate.strip().startswith((f"{var}=", f"{var}+="))
+            )
+        return text
+
+    for script, (flag, required) in muting.items():
+        invocations = [
+            effective_args(line)
+            for line in lines
+            if script in line and "python3" in line
+        ]
+        assert invocations, f"expected the gate to invoke {script}"
+        for inv in invocations:
+            if required:
+                # The invariants checker is silent-on-warn unless told otherwise,
+                # so every gate invocation must opt in.
+                assert flag in inv, (
+                    f"{script} invoked without {flag}; warn-severity findings "
+                    f"would exit 0 and be discarded by run(). Line: {inv}"
+                )
+            else:
+                assert flag not in inv, (
+                    f"{script} invoked with {flag}; violations would exit 0 and "
+                    f"be discarded by run(). Line: {inv}"
+                )
+
+
 def test_gate_does_not_mute_the_access_analyzer_exit_code():
     """--no-fail-on-public-access + advisory run() = green tick over a real
     finding, with the findings text thrown away. `advisory` already guarantees
@@ -1036,3 +1091,84 @@ def test_check_no_public_access_exit_code_depends_on_the_flag(tmp_path, monkeypa
         "the flag is what makes violations exit 0 — which is why an advisory "
         "stage must not pass it"
     )
+
+
+# --- round-3 regression guards ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "branches,expect_flag",
+    [
+        ("['**', '!main']", False),  # negation excludes main → no double-run
+        ("['!main']", False),
+        ("['**']", True),
+        ("['release/**', '!release/old']", False),  # main matches nothing
+        ("['!dev', '**']", True),  # later positive re-includes main
+    ],
+)
+def test_wf014_honours_negated_branch_patterns(tmp_path, branches, expect_flag):
+    """GitHub branch filters support `!` negation with later entries overriding
+    earlier ones, so ['**', '!main'] means every branch except main."""
+    write_workflow(
+        tmp_path,
+        "s.yml",
+        _triggers_wf(
+            "on:\n          pull_request:\n            branches: [main]\n"
+            f"          push:\n            branches: {branches}"
+        ),
+    )
+    assert ("WF014" in checks_hit(tmp_path)) is expect_flag
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "accepted: [ unclosed",  # not valid YAML
+        "- just\n- a\n- list\n",  # top level not a mapping
+        'accepted:\n  - fingerprint: "x"\n    count: banana\n',  # count not an int
+        'accepted:\n  - fingerprint: "x"\n    count: 0\n',  # a zero budget
+        'accepted:\n  - fingerprint: "x"\n    count: -5\n',  # negative
+    ],
+)
+def test_malformed_baseline_exits_two_without_a_traceback(tmp_path, content):
+    """A broken baseline must fail closed *and* legibly. Exit 2 is the
+    documented "could not run"; a traceback is correct-but-unreadable, and
+    silently ignoring the file would accept nothing while burying the reason."""
+    write_workflow(tmp_path, "w.yml", CLEAN)
+    baseline = tmp_path / "b.yml"
+    baseline.write_text(content, encoding="utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--path",
+            str(tmp_path),
+            "--baseline",
+            str(baseline),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 2, (proc.returncode, proc.stdout, proc.stderr)
+    assert "Traceback" not in proc.stderr, proc.stderr
+    assert "error:" in proc.stderr, proc.stderr
+
+
+def test_absent_baseline_is_not_an_error(tmp_path):
+    """A caller repo with no baseline at all is the normal case, not a failure —
+    every finding is simply unaccepted."""
+    write_workflow(tmp_path, "w.yml", CLEAN)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--path",
+            str(tmp_path),
+            "--baseline",
+            str(tmp_path / "does-not-exist.yml"),
+            "--fail-on-warn",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
