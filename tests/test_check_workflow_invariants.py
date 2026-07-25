@@ -788,7 +788,15 @@ def test_wf014_allows_push_restricted_to_other_branches(tmp_path):
 
 
 def test_gate_runs_the_checker_with_fail_on_warn():
-    """The gate must not leave warn-severity checks advisory.
+    """LOAD-BEARING — do not delete as redundant with the class-level test below.
+
+    This asserts the flag sits on the *unconditional* INV_ARGS= line. The
+    class-level test generalises across invocations, but an adversarial mutation
+    that moved --fail-on-warn into a conditional `INV_ARGS+=(...)` was caught only
+    here. The two overlap in what they cover and differ in what they can miss;
+    keep both.
+
+    The gate must not leave warn-severity checks advisory.
 
     WF004 (mutable internal @main) and WF007 (forgeable GITHUB_OUTPUT
     delimiter) are `warn`. Without --fail-on-warn they were advisory-only in
@@ -975,11 +983,22 @@ def test_no_gate_stage_mutes_a_findings_exit_code():
         """
         text = line
         for var in re.findall(r"\$\{(\w+)\[@\]\}", line):
-            text += " " + " ".join(
-                candidate
-                for candidate in lines
-                if candidate.strip().startswith((f"{var}=", f"{var}+="))
-            )
+            for candidate in lines:
+                stripped = candidate.strip()
+                if not stripped.startswith((f"{var}=", f"{var}+=")):
+                    continue
+                # Only unconditional assignments count. `[ "$X" = 1 ] && VAR+=(…)`
+                # and anything indented under an `if` apply on *some* runs, so
+                # crediting them here would be fail-open — review demonstrated a
+                # mutation that moved the flag into a conditional append and slipped
+                # past an earlier version of this check.
+                if candidate != stripped:
+                    continue  # indented → inside a block
+                if "&&" in candidate.split("=", 1)[0] or candidate.lstrip().startswith(
+                    "["
+                ):
+                    continue  # guarded by a test
+                text += " " + candidate
         return text
 
     for script, (flag, required) in muting.items():
@@ -1172,3 +1191,76 @@ def test_absent_baseline_is_not_an_error(tmp_path):
         text=True,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize(
+    "value,expect",
+    [
+        ("main", True),  # scalar string: invalid per schema, common typo
+        (["main"], True),
+        (5, False),  # non-iterable: must not raise
+        (True, False),
+        ([None], False),
+        ([["main"]], False),  # nested list: stringified, no crash
+    ],
+)
+def test_branch_filter_normalisation_never_raises(value, expect):
+    """A scalar `branches: main` used to iterate characters and return False —
+    the opposite of intent — and `branches: 5` raised TypeError. Both are
+    invalid workflow files, but a checker should not crash on one."""
+    assert ci._push_fires_on_main({"push": {"branches": value}}) is expect
+
+
+def test_conditional_array_append_does_not_satisfy_the_class_level_test(tmp_path):
+    """The class-level guard must not credit a flag that only applies sometimes.
+
+    Adversarial review moved --fail-on-warn from the unconditional INV_ARGS= line
+    into a guarded `INV_ARGS+=(...)` and the earlier effective_args() treated it as
+    unconditional, letting the mutation through.
+    """
+    fake = tmp_path / "gate.sh"
+    fake.write_text(
+        'INV_ARGS=(--format "$FORMAT")\n'
+        '[ "$STRICT" = 1 ] && INV_ARGS+=(--fail-on-warn)\n'
+        'python3 scripts/check_workflow_invariants.py "${INV_ARGS[@]}"\n',
+        encoding="utf-8",
+    )
+    lines = fake.read_text(encoding="utf-8").splitlines()
+
+    def effective_args(line: str) -> str:
+        text = line
+        for var in re.findall(r"\$\{(\w+)\[@\]\}", line):
+            for candidate in lines:
+                stripped = candidate.strip()
+                if not stripped.startswith((f"{var}=", f"{var}+=")):
+                    continue
+                if candidate != stripped:
+                    continue
+                if "&&" in candidate.split("=", 1)[0] or candidate.lstrip().startswith(
+                    "["
+                ):
+                    continue
+                text += " " + candidate
+        return text
+
+    invocation = next(
+        effective_args(line)
+        for line in lines
+        if "check_workflow_invariants.py" in line and "python3" in line
+    )
+    assert "--fail-on-warn" not in invocation, (
+        "a conditionally-appended flag must not count as unconditionally present"
+    )
+
+
+def test_gate_runs_yamllint_in_strict_mode():
+    """yamllint exits 0 on warning-level findings, and run() discards the output
+    of anything exiting 0 — the same muted-findings shape as the two blocking
+    bugs, just inside a third-party tool's own pass contract. --strict makes
+    warnings count."""
+    yamllint_lines = [line for line in GATE.splitlines() if "YAMLLINT_ARGS=(" in line]
+    assert yamllint_lines, "expected the gate to build YAMLLINT_ARGS"
+    assert any("--strict" in line for line in yamllint_lines), (
+        "yamllint must run --strict or warning-level findings exit 0 and are "
+        f"discarded. Found: {yamllint_lines}"
+    )

@@ -190,7 +190,10 @@ fi
 # yamllint is a hard dependency (pinned in requirements-dev.txt and run by CI),
 # not an optional extra — its absence is `missing`, not `skip`.
 if have yamllint; then
-  YAMLLINT_ARGS=(-c .yamllint.yml)
+  # --strict so warning-level findings exit non-zero too. Without it a
+  # warning exits 0 and run() discards the output — the same muted-findings
+  # shape as B-1/B-2, just inside a third-party tool's pass contract.
+  YAMLLINT_ARGS=(-c .yamllint.yml --strict)
   [ "$FORMAT" = "github" ] && YAMLLINT_ARGS+=(-f github)
   run "yamllint" required yamllint "${YAMLLINT_ARGS[@]}" .github/
 else
@@ -245,7 +248,7 @@ elif have actionlint; then
     *) say "${YELLOW}  note:${RESET} actionlint on PATH is ${actual:-unknown}, CI uses ${ACTIONLINT_VERSION} — findings may differ" ;;
   esac
   run "actionlint" required actionlint -no-color -shellcheck= .github/workflows/*.yml
-elif have go && [ "$FAST" = 0 ]; then
+elif have go; then
   say "${DIM}  installing actionlint (one-off, via go install)...${RESET}"
   if GOBIN="$(go env GOPATH)/bin" go install \
        "github.com/rhysd/actionlint/cmd/actionlint@$ACTIONLINT_VERSION" >/dev/null 2>&1; then

@@ -337,7 +337,7 @@ def _push_fires_on_main(trig: dict) -> bool:
         return True
 
     ignore = push.get("branches-ignore")
-    if ignore and _matches(MAIN, ignore):
+    if ignore is not None and _matches(MAIN, ignore):
         return False
 
     branches = push.get("branches")
@@ -349,6 +349,25 @@ def _push_fires_on_main(trig: dict) -> bool:
     return _matches(MAIN, branches)
 
 
+def _as_patterns(value) -> list[str]:
+    """Normalise a branch/tag filter to a list of pattern strings.
+
+    A scalar (`branches: main`) is invalid per GitHub's schema but is a common
+    hand-edit typo, and iterating a bare string yields characters — which made
+    `branches: main` evaluate to False, the opposite of the author's intent. A
+    non-iterable (`branches: 5`) previously raised TypeError. Treat a scalar as a
+    one-element list and stringify everything.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (str, int, float, bool)):
+        return [str(value)]
+    try:
+        return [str(v) for v in value]
+    except TypeError:
+        return [str(value)]
+
+
 def _matches(name: str, patterns) -> bool:
     """Does `name` survive a GitHub branch/tag filter list?
 
@@ -357,7 +376,7 @@ def _matches(name: str, patterns) -> bool:
     main". Evaluating in order is what distinguishes that from `["**"]`.
     """
     included = False
-    for raw in patterns:
+    for raw in _as_patterns(patterns):
         pat = str(raw)
         if pat.startswith("!"):
             if fnmatch(name, pat[1:]):
