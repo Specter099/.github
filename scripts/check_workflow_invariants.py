@@ -31,6 +31,7 @@ import argparse
 import json
 import re
 import sys
+from fnmatch import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,6 +45,8 @@ import yaml
 ORG = "Specter099"
 INTERNAL_PREFIX = f"{ORG}/.github"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# The protected branch every trigger rule here is written about.
+MAIN = "main"
 # Steps whose presence marks a workflow as running *checks* rather than deploying.
 CHECK_COMMAND_RE = re.compile(
     r"\b(ruff|pytest|bandit|pip-audit|checkov|cfn-lint|yamllint|eslint|vitest)\b"
@@ -304,6 +307,45 @@ def check_secrets_declared(src: Source) -> list[Finding]:
     ]
 
 
+def _push_fires_on_main(trig: dict) -> bool:
+    """Would this `on:` block run the workflow on a push to main?
+
+    Every spelling below means yes, and each was a real miss at some point:
+      push: {branches: [main]}      explicit
+      push:                         no filter at all → every branch
+      on: [pull_request, push]      list form; triggers() maps push to None
+      push: {paths: [...]}          a mapping with no branch filter → every branch
+      push: {branches: ["m*"]}      a glob that matches main
+
+    And these mean no:
+      push: {branches: [release/**]}   an explicit list that excludes main
+      push: {tags: ["v*"]}            tags-only never fires on a branch push, so
+                                      there is no merge-time double-run. This is
+                                      the common "PR checks + tag release" layout
+                                      and flagging it was a false positive.
+      push: {branches-ignore: [main]}  main explicitly excluded
+    """
+    if "push" not in trig:
+        return False
+    push = trig["push"]
+    if not isinstance(push, dict):
+        # `push:` (None) or a bare string/list form — no filtering at all.
+        return True
+
+    ignore = push.get("branches-ignore")
+    if ignore and any(fnmatch(MAIN, str(p)) for p in ignore):
+        return False
+
+    branches = push.get("branches")
+    if branches is None:
+        # No branch filter. A tags-only trigger never fires on a branch push;
+        # anything else (paths, no filter at all) fires on every branch.
+        tag_only = any(k in push for k in ("tags", "tags-ignore"))
+        return not tag_only
+    # Entries may be globs, so a literal membership test is not enough.
+    return any(fnmatch(MAIN, str(p)) for p in branches)
+
+
 def check_triggers(src: Source) -> list[Finding]:
     """WF006 pull_request_target, WF014 pull_request + push:main together."""
     out = []
@@ -317,22 +359,7 @@ def check_triggers(src: Source) -> list[Finding]:
                 "pull_request_target grants a write token to fork-authored code",
             )
         )
-    # WF014 has to treat three spellings of "also fires on main" as equivalent:
-    #   push: {branches: [main]}  — explicit
-    #   push:                     — no filter at all, so it fires on every branch
-    #                               including main (this is the easy one to miss)
-    #   on: [pull_request, push]  — list form, which triggers() maps to push=None
-    # Only an explicit branch list that excludes main is exempt.
-    push_fires_on_main = False
-    if "push" in trig:
-        push = trig["push"]
-        if isinstance(push, dict):
-            branches = push.get("branches")
-            # A filter naming other branches is fine; no filter means all branches.
-            push_fires_on_main = branches is None or "main" in branches
-        else:
-            push_fires_on_main = True
-    if "pull_request" in trig and push_fires_on_main:
+    if "pull_request" in trig and _push_fires_on_main(trig):
         out.append(
             Finding(
                 "WF014",
@@ -552,12 +579,26 @@ def collect(root: Path) -> tuple[list[Finding], list[str]]:
     return findings, errors
 
 
-def load_baseline(path: Path) -> tuple[set[str], dict]:
+def load_baseline(path: Path) -> tuple[dict[str, int], dict]:
+    """Return {fingerprint: accepted_count}.
+
+    Counts, not a bare set: two genuinely distinct violations in the same file
+    can share a fingerprint (same check, same path, same detail text — e.g. a
+    second `echo "x<<EOF"` added to a workflow that already has a baselined
+    one). With a set, the new one was silently absorbed by the old entry. An
+    entry accepts `count` findings (default 1); anything beyond that is new and
+    blocks.
+    """
     if not path.is_file():
-        return set(), {}
+        return {}, {}
     doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    accepted = doc.get("accepted") or []
-    return {str(a["fingerprint"]) for a in accepted if "fingerprint" in a}, doc
+    counts: dict[str, int] = {}
+    for a in doc.get("accepted") or []:
+        if "fingerprint" not in a:
+            continue
+        fp = str(a["fingerprint"])
+        counts[fp] = counts.get(fp, 0) + int(a.get("count", 1))
+    return counts, doc
 
 
 def main() -> int:
@@ -608,9 +649,14 @@ def main() -> int:
         if args.baseline
         else root / ".github" / "workflow-invariants-baseline.yml"
     )
-    accepted, _ = (set(), {}) if args.strict else load_baseline(baseline_path)
+    accepted, _ = ({}, {}) if args.strict else load_baseline(baseline_path)
+    # Consume the per-fingerprint budget in order; findings past it are new.
+    remaining = dict(accepted)
     for f in findings:
-        f.accepted = f.fingerprint in accepted
+        budget = remaining.get(f.fingerprint, 0)
+        if budget > 0:
+            f.accepted = True
+            remaining[f.fingerprint] = budget - 1
 
     fail_sev = FAIL_SEVERITIES | ({"warn"} if args.fail_on_warn else set())
     blocking = [f for f in findings if not f.accepted and f.severity in fail_sev]

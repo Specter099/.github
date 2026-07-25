@@ -235,7 +235,10 @@ run "workflow invariants" required \
 # what CI installs, rather than letting the drift be silent.
 ACTIONLINT_VERSION="v1.7.7"
 
-if have actionlint; then
+if [ "$FAST" = 1 ]; then
+  # Explicit opt-out; counts as skipped, so PASS stays reachable.
+  skip "actionlint" "--fast"
+elif have actionlint; then
   actual="$(actionlint --version 2>/dev/null | head -1)"
   case "$actual" in
     "${ACTIONLINT_VERSION#v}"|"$ACTIONLINT_VERSION") : ;;
@@ -251,9 +254,6 @@ elif have go && [ "$FAST" = 0 ]; then
   else
     missing "actionlint" "go install github.com/rhysd/actionlint/cmd/actionlint@$ACTIONLINT_VERSION"
   fi
-elif [ "$FAST" = 1 ]; then
-  # An explicit --fast opt-out is a choice, not an absent dependency.
-  skip "actionlint" "--fast"
 else
   missing "actionlint" "go install github.com/rhysd/actionlint/cmd/actionlint@$ACTIONLINT_VERSION"
 fi
@@ -299,10 +299,16 @@ if [ -n "$CDK_PROJECT" ]; then
         python3 scripts/validate_bucket_names.py --template-dir "$OUT"
       # check_no_public_access calls the Access Analyzer API, so it needs real
       # credentials. Probe first rather than emitting a traceback.
+      #
+      # Deliberately NOT --no-fail-on-public-access. That flag makes the script
+      # exit 0 when it finds public access, and `run` prints ✓ and discards the
+      # output of anything that exits 0 — so detected public access rendered as
+      # an affirmative green tick with the findings thrown away. `advisory`
+      # already guarantees this stage cannot block the gate; a non-zero exit is
+      # exactly what makes the advisory path *show* the findings.
       if have aws && aws sts get-caller-identity >/dev/null 2>&1; then
         run "access analyzer" advisory \
-          python3 scripts/check_no_public_access.py \
-            --template-dir "$OUT" --no-fail-on-public-access
+          python3 scripts/check_no_public_access.py --template-dir "$OUT"
       else
         skip "access analyzer" "no usable AWS credentials (needs a real API call)"
       fi

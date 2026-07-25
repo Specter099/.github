@@ -8,6 +8,7 @@ crafted violation that it must catch, plus a clean counterpart it must not flag.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import textwrap
@@ -112,16 +113,23 @@ def test_this_repo_has_no_blocking_findings_outside_baseline():
 
 
 def test_baseline_has_no_stale_entries():
-    """Every baselined fingerprint must still correspond to a real finding.
+    """Every baselined fingerprint must still correspond to a real finding, and
+    no entry may accept more findings than actually exist.
 
-    Without this, fixing an issue leaves a dead entry that would silently
-    re-accept the problem if it ever came back.
+    Without the first half, fixing an issue leaves a dead entry that would
+    silently re-accept the problem if it came back. Without the second, an
+    inflated `count` is a blank cheque for future duplicates.
     """
     accepted, _ = ci.load_baseline(
         REPO_ROOT / ".github" / "workflow-invariants-baseline.yml"
     )
-    live = {f.fingerprint for f in findings_for(REPO_ROOT)}
-    assert accepted - live == set(), "baseline entries no longer match any finding"
+    live: dict[str, int] = {}
+    for f in findings_for(REPO_ROOT):
+        live[f.fingerprint] = live.get(f.fingerprint, 0) + 1
+    stale = set(accepted) - set(live)
+    assert stale == set(), f"baseline entries match no finding: {sorted(stale)}"
+    over = {fp: (n, live[fp]) for fp, n in accepted.items() if n > live[fp]}
+    assert over == {}, f"baseline accepts more than exist (accepted, live): {over}"
 
 
 # --- WF001 timeout-minutes --------------------------------------------------
@@ -829,3 +837,202 @@ def test_wf014_flags_push_dict_without_a_branches_key(tmp_path):
         ),
     )
     assert "WF014" in checks_hit(tmp_path)
+
+
+# --- round-2 regression guards ---------------------------------------------
+
+
+def test_wf014_allows_tags_only_push(tmp_path):
+    """`push: {tags: [...]}` never fires on a branch push, so there is no
+    merge-time double-run. This is the common "PR checks + tag release" caller
+    layout, and flagging it was a false positive on an error-severity check."""
+    write_workflow(
+        tmp_path,
+        "s.yml",
+        _triggers_wf(
+            "on:\n          pull_request:\n            branches: [main]\n"
+            "          push:\n            tags: ['v*']"
+        ),
+    )
+    assert "WF014" not in checks_hit(tmp_path)
+
+
+def test_wf014_allows_branches_ignore_main(tmp_path):
+    write_workflow(
+        tmp_path,
+        "s.yml",
+        _triggers_wf(
+            "on:\n          pull_request:\n            branches: [main]\n"
+            "          push:\n            branches-ignore: [main]"
+        ),
+    )
+    assert "WF014" not in checks_hit(tmp_path)
+
+
+@pytest.mark.parametrize("pattern", ["m*", "**", "mai?", "*"])
+def test_wf014_flags_glob_branch_patterns_matching_main(tmp_path, pattern):
+    """Branch filters are globs. An exact-string membership test missed
+    `branches: ["m*"]`, which does fire on main."""
+    write_workflow(
+        tmp_path,
+        "s.yml",
+        _triggers_wf(
+            "on:\n          pull_request:\n            branches: [main]\n"
+            f"          push:\n            branches: ['{pattern}']"
+        ),
+    )
+    assert "WF014" in checks_hit(tmp_path)
+
+
+def test_baseline_count_stops_a_duplicate_new_violation(tmp_path):
+    """A second, genuinely new violation that happens to share a fingerprint
+    with a baselined one must still block.
+
+    Two identical `echo "x<<EOF"` lines in one file produce the same
+    check+path+detail, so a set-based baseline absorbed the new one silently.
+    """
+    body = swap(
+        RUN_LINE,
+        '        run: |\n          echo "diff<<EOF" >> "$GITHUB_OUTPUT"\n',
+    )
+    write_workflow(tmp_path, "w.yml", body)
+    one = [f for f in findings_for(tmp_path) if f.check == "WF007"]
+    assert len(one) == 1
+    fp = one[0].fingerprint
+
+    baseline = tmp_path / "b.yml"
+    baseline.write_text(f'accepted:\n  - fingerprint: "{fp}"\n', encoding="utf-8")
+    cmd = [
+        sys.executable,
+        str(SCRIPT),
+        "--path",
+        str(tmp_path),
+        "--baseline",
+        str(baseline),
+        "--fail-on-warn",
+    ]
+
+    # One occurrence, budget of one → accepted.
+    assert subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+
+    # Add a second identical occurrence → the budget is spent, so it blocks.
+    write_workflow(
+        tmp_path,
+        "w.yml",
+        body.replace(
+            '          echo "diff<<EOF" >> "$GITHUB_OUTPUT"\n',
+            '          echo "diff<<EOF" >> "$GITHUB_OUTPUT"\n'
+            '          echo "diff<<EOF" >> "$GITHUB_OUTPUT"\n',
+        ),
+    )
+    assert len([f for f in findings_for(tmp_path) if f.check == "WF007"]) == 2
+    second = subprocess.run(cmd, capture_output=True, text=True)
+    assert second.returncode == 1, second.stdout
+
+    # An explicit count of 2 accepts both, so the escape hatch still exists.
+    baseline.write_text(
+        f'accepted:\n  - fingerprint: "{fp}"\n    count: 2\n', encoding="utf-8"
+    )
+    assert subprocess.run(cmd, capture_output=True, text=True).returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# The gate's advisory contract.
+#
+# `run()` prints ✓ and DISCARDS the output of anything exiting 0. So a stage
+# whose findings matter must signal them with a non-zero exit — otherwise the
+# gate renders a detected problem as an affirmative green tick. This bit the
+# CD access-analyzer stage, which passed --no-fail-on-public-access (making the
+# script exit 0 on violations) while running in advisory mode.
+# ---------------------------------------------------------------------------
+
+GATE = (REPO_ROOT / "scripts" / "local-ci.sh").read_text(encoding="utf-8")
+
+
+def test_gate_does_not_mute_the_access_analyzer_exit_code():
+    """--no-fail-on-public-access + advisory run() = green tick over a real
+    finding, with the findings text thrown away. `advisory` already guarantees
+    the stage cannot block, so the exit code must stay meaningful."""
+    analyzer_lines = [
+        line for line in GATE.splitlines() if "check_no_public_access.py" in line
+    ]
+    assert analyzer_lines, "expected the CD stage to invoke check_no_public_access.py"
+    invocation = " ".join(analyzer_lines)
+    assert "--no-fail-on-public-access" not in invocation, (
+        "the gate must not suppress the analyzer's exit code; advisory mode "
+        "already prevents it from blocking. Found: " + invocation
+    )
+
+
+def test_advisory_stages_only_show_output_on_nonzero_exit():
+    """Pins the run() behaviour the test above depends on, so a future change to
+    run() that swallowed non-zero output would surface here rather than silently
+    invalidating the reasoning."""
+    body = GATE.split("run() {", 1)[1].split("\n}", 1)[0]
+    zero_branch = body.split("elif", 1)[0]
+    # The rc==0 path must not print captured output...
+    assert "$out" not in zero_branch, (
+        "run() now prints output on success; the advisory reasoning above needs "
+        "revisiting"
+    )
+    # ...while the advisory path must.
+    advisory_branch = body.split("elif", 1)[1].split("else", 1)[0]
+    assert "$out" in advisory_branch
+
+
+def test_check_no_public_access_exit_code_depends_on_the_flag(tmp_path, monkeypatch):
+    """The underlying behaviour that made the flag dangerous in an advisory
+    stage: with it, violations exit 0; without it, they exit 1."""
+    import check_no_public_access as cnpa
+
+    (tmp_path / "S.template.json").write_text(
+        json.dumps(
+            {
+                "Resources": {
+                    "BP": {
+                        "Type": "AWS::S3::BucketPolicy",
+                        "Properties": {
+                            "PolicyDocument": {
+                                "Version": "2012-10-17",
+                                "Statement": [
+                                    {
+                                        "Effect": "Allow",
+                                        "Principal": "*",
+                                        "Action": "s3:GetObject",
+                                        "Resource": "arn:aws:s3:::b/*",
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeAnalyzer:
+        def check_no_public_access(self, **_kw):
+            return {"result": "FAIL", "reasons": [{"description": "public"}]}
+
+    class FakeSts:
+        def get_caller_identity(self):
+            return {"Account": "123456789012"}
+
+    monkeypatch.setattr(
+        cnpa.boto3,
+        "client",
+        lambda name, **_kw: FakeSts() if name == "sts" else FakeAnalyzer(),
+    )
+
+    def run_with(argv):
+        monkeypatch.setattr(
+            "sys.argv", ["prog", "--template-dir", str(tmp_path), *argv]
+        )
+        return cnpa.main()
+
+    assert run_with([]) == 1, "violations must be a non-zero exit by default"
+    assert run_with(["--no-fail-on-public-access"]) == 0, (
+        "the flag is what makes violations exit 0 — which is why an advisory "
+        "stage must not pass it"
+    )
