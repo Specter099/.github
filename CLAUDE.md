@@ -97,4 +97,6 @@ All workflows use `workflow_call` triggers — caller repos reference them with 
 ## Code Style
 
 - YAML: `.yamllint.yml` config — line-length disabled, document-start disabled, truthy allows `on`
-- Python scripts: no formatter config in repo — follow existing style (type hints, argparse CLI, boto3)
+- Python: `ruff.toml` — `ruff format` defaults, and `select = ["E4", "E7", "E9", "F"]` (ruff's stable default set). Beyond that, follow existing style: type hints, argparse CLI, boto3.
+- `ruff` is pinned exactly in `requirements-dev.txt`. It changes its default rule set between minor releases, so an unpinned linter means local and CI enforce different rules — that exact drift turned a green local run red in CI. Bump the pin deliberately and review `ruff.toml` alongside it.
+- Broadening the ruff selection (`I`, `UP`, `RUF`, `SIM` are all reasonable) means fixing the findings that surface, so do it as its own change.

@@ -17,7 +17,12 @@
 # block. Missing optional tools SKIP with an install hint rather than failing,
 # so a fresh clone is usable immediately.
 
-set -uo pipefail
+# pipefail only, deliberately no `-u`: under `set -u`, bash 3.2 — still
+# /bin/bash on macOS — treats `${#arr[@]}` on an empty array as an unbound
+# variable and aborts, which the summary block would hit on every clean run.
+# Every variable here is explicitly initialised, so `-u` buys little.
+# No `-e` either: `run` inspects each stage's exit code itself.
+set -o pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 2
@@ -142,8 +147,8 @@ zizmor_brief() {
 # ===========================================================================
 hdr "CI"
 
-if [ "$FIX" = 1 ] && have ruff; then
-  run "ruff format (--fix)" required ruff format scripts/ tests/
+if [ "$FIX" = 1 ] && python3 -c 'import ruff' 2>/dev/null; then
+  run "ruff format (--fix)" required python3 -m ruff format scripts/ tests/
 fi
 
 if have yamllint; then
@@ -152,11 +157,18 @@ else
   skip "yamllint" "pip install -r requirements-dev.txt"
 fi
 
-if have ruff; then
+# Same `python3 -m` reasoning as pytest below, and it bit harder here: a
+# PATH-shadowed ruff 0.15 passed locally while CI's pinned 0.16 failed on 22
+# findings, because the two ship different default rule sets. ruff.toml now
+# declares the rules; this makes sure the pinned binary is the one applying them.
+if python3 -c 'import ruff' 2>/dev/null; then
+  run "ruff check" required python3 -m ruff check scripts/ tests/
+  run "ruff format --check" required python3 -m ruff format --check scripts/ tests/
+elif have ruff; then
   run "ruff check" required ruff check scripts/ tests/
   run "ruff format --check" required ruff format --check scripts/ tests/
 else
-  skip "ruff" "pip install ruff"
+  skip "ruff" "pip install -r requirements-dev.txt"
 fi
 
 # Invoke via `python3 -m` so the tests run against the same interpreter that

@@ -217,6 +217,14 @@ Missing optional tools (`actionlint`, `zizmor`, `act`, `cdk`) are **skipped with
 an install hint** rather than failing, so a fresh clone is usable straight away.
 `actionlint` is auto-installed via `go install` when Go is present.
 
+Python tools are invoked as `python3 -m ruff` / `python3 -m pytest` rather than
+via a bare command, and `ruff` is pinned exactly in `requirements-dev.txt`.
+Both are load-bearing: a `ruff` shadowed earlier on `PATH` was a different
+version with a different default rule set than the one `pip` installed, which is
+the "green locally, red in CI" divergence this gate exists to prevent.
+`ruff.toml` then declares the rule set explicitly so a version bump can't move
+the goalposts silently.
+
 ### Testing the CD path
 
 A deploy can't be genuinely rehearsed locally — it needs AWS and a real CDK app.
