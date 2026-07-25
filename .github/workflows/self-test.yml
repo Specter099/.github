@@ -29,8 +29,9 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Lint YAML (yamllint)
-        run: yamllint -c .yamllint.yml .github/
-
-      - name: Run tests (pytest)
-        run: pytest tests/ -v
+      # Single entrypoint shared with local development, so that a green
+      # `./scripts/local-ci.sh` on a laptop means a green check here. Stages:
+      # yamllint, ruff, pytest, workflow invariants, actionlint; zizmor runs
+      # advisory. Add or remove stages in the script, not here.
+      - name: CI gate (scripts/local-ci.sh)
+        run: ./scripts/local-ci.sh --format github

@@ -192,6 +192,64 @@ jobs:
 
 ---
 
+## Local development
+
+Run the gate before committing. It executes the same stages as
+`.github/workflows/self-test.yml`, so a green run locally means a green check on
+the PR — and it takes about three seconds.
+
+```bash
+pip install -r requirements-dev.txt
+./scripts/local-ci.sh
+```
+
+| Flag | What it does |
+|------|--------------|
+| *(none)* | yamllint, ruff, pytest, workflow invariants, actionlint; zizmor advisory |
+| `--fix` | `ruff format` first, then the gate |
+| `--strict` | Ignore the invariants baseline — shows the outstanding work list |
+| `--fast` | Skip the slower advisory stages |
+| `--cdk-project DIR` | Also run the CD-side checks against a caller repo (below) |
+| `--act` | Execute `self-test.yml` locally under [`act`](https://github.com/nektos/act) (needs Docker) |
+| `--install-hook` | Install as `.git/hooks/pre-commit` (bypass with `git commit --no-verify`) |
+
+Missing optional tools (`actionlint`, `zizmor`, `act`, `cdk`) are **skipped with
+an install hint** rather than failing, so a fresh clone is usable straight away.
+`actionlint` is auto-installed via `go install` when Go is present.
+
+### Testing the CD path
+
+A deploy can't be genuinely rehearsed locally — it needs AWS and a real CDK app.
+What `--cdk-project` does instead is run the checks `cdk-review` would run,
+against a real synthesized template tree:
+
+```bash
+./scripts/local-ci.sh --cdk-project ../bitwarden-cdk
+```
+
+That runs `cdk synth`, then validates bucket names against both the Python
+source and the synthesized templates, then runs the IAM Access Analyzer check —
+which needs real credentials and is skipped with a notice if `aws sts
+get-caller-identity` fails. It also runs the workflow invariants against the
+caller repo, which is where trigger-convention violations tend to live.
+
+### Workflow invariants
+
+`scripts/check_workflow_invariants.py` enforces the conventions in this document
+that no off-the-shelf linter knows about — undeclared `workflow_call` secrets,
+unpinned internal actions, `pull_request_target`, script injection into `run:`,
+checks leaking into deploy workflows, README examples passing inputs that don't
+exist. `--list-checks` prints all of them.
+
+Findings that predate the checker are accepted in
+`.github/workflow-invariants-baseline.yml`. That file is a **work list, not a
+suppression list**: each entry cites the review finding it corresponds to, and
+deleting an entry is how you claim the fix. New violations fail the gate even
+while old ones are tolerated, and a test asserts the baseline contains no stale
+entries.
+
+---
+
 ## Composite Actions
 
 ### `setup-cdk`
