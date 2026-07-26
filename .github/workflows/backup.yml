@@ -11,5 +11,4 @@ jobs:
     with:
       s3-bucket: ${{ vars.BACKUP_S3_BUCKET }}
       environment: production
-    secrets:
-      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+    secrets: inherit
