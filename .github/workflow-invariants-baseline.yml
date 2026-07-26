@@ -62,6 +62,8 @@ accepted:
     review: S6
   - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/setup-cdk@main"
     review: S6
+  - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
   - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
   - fingerprint: "WF004:.github/workflows/validate-bucket-names.yml:checkout of Specter099/.github with no ref (implicit default branch)"
@@ -80,8 +82,6 @@ accepted:
   - fingerprint: "WF008:.github/workflows/python-ci.yml:job 'ci'"
     review: E1
   - fingerprint: "WF008:.github/workflows/self-test.yml:job 'test'"
-    review: E1
-  - fingerprint: "WF008:.github/workflows/static-site-review.yml:job 'review'"
     review: E1
 
   # --- WF011: vestigial input ----------------------------------------------
