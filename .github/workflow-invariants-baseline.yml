@@ -17,18 +17,6 @@
 # above a finding don't silently un-baseline it)
 
 accepted:
-  # --- WF005: undeclared secrets force callers into `secrets: inherit` -------
-  # Review finding S4. Fix: add a workflow_call.secrets block to each; three
-  # other workflows already do it correctly and serve as the pattern.
-  - fingerprint: "WF005:.github/workflows/access-analyzer-check.yml:references secrets.AWS_ROLE_ARN but does not declare it"
-    review: S4
-  - fingerprint: "WF005:.github/workflows/cdk-deploy.yml:references secrets.AWS_ROLE_ARN but does not declare it"
-    review: S4
-  - fingerprint: "WF005:.github/workflows/repo-backup.yml:references secrets.AWS_ROLE_ARN but does not declare it"
-    review: S4
-  - fingerprint: "WF005:.github/workflows/static-site-deploy.yml:references secrets.AWS_ROLE_ARN but does not declare it"
-    review: S4
-
   # --- WF012: README documents an input that does not exist -----------------
   # Review finding "Documentation drift" #1. python-ci's input is
   # `python-versions` and takes a JSON array; GitHub rejects unknown inputs,
@@ -46,20 +34,30 @@ accepted:
     review: S6
   - fingerprint: "WF004:.github/workflows/cdk-deploy.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
+  - fingerprint: "WF004:.github/workflows/cdk-deploy.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
   - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/setup-cdk@main"
     review: S6
   - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/access-analyzer@main"
     review: S6
   - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
+  - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
+  - fingerprint: "WF004:.github/workflows/python-ci.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
   - fingerprint: "WF004:.github/workflows/python-ci.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
   - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/setup-cdk@main"
     review: S6
+  - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
   - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
   - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/setup-cdk@main"
     review: S6
+  - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
   - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
   - fingerprint: "WF004:.github/workflows/validate-bucket-names.yml:checkout of Specter099/.github with no ref (implicit default branch)"
@@ -73,16 +71,6 @@ accepted:
   - fingerprint: "WF007:.github/workflows/static-site-review.yml:output 'diff' uses fixed heredoc delimiter 'EOF'"
     review: S5
 
-  # --- WF008: no concurrency group on PR-check workflows --------------------
-  # Review finding E1. Likely the largest runner-minute saving available.
-  - fingerprint: "WF008:.github/workflows/cdk-review.yml:job 'review'"
-    review: E1
-  - fingerprint: "WF008:.github/workflows/python-ci.yml:job 'ci'"
-    review: E1
-  - fingerprint: "WF008:.github/workflows/self-test.yml:job 'test'"
-    review: E1
-  - fingerprint: "WF008:.github/workflows/static-site-review.yml:job 'review'"
-    review: E1
 
   # --- WF011: vestigial input ----------------------------------------------
   # Kept deliberately for caller interface parity with the deploy workflows;

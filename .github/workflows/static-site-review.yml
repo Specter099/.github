@@ -15,6 +15,10 @@ on:
         description: AWS region
         type: string
         default: "us-east-1"
+      environment:
+        description: GitHub environment to use (controls which secrets/vars are loaded)
+        type: string
+        default: "production"
       cdk-version:
         description: >-
           CDK CLI npm version. Empty/unset falls back to
@@ -33,7 +37,7 @@ on:
       enable-ci-logs:
         description: Ship detailed step logs to S3/CloudWatch
         type: boolean
-        default: true
+        default: false
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
@@ -63,11 +67,15 @@ jobs:
   review:
     name: Lint, Test & Diff
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    concurrency:
+      group: static-site-review-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       id-token: write
       contents: read
       pull-requests: write
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -179,7 +187,9 @@ jobs:
         env:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
-          diff_output=$(cdk diff 2>&1) || true
+          # Reuses the cdk.out from the "CDK Synth" step above instead of
+          # letting `cdk diff` re-synthesize.
+          diff_output=$(cdk diff --app cdk.out 2>&1) || true
           echo "$diff_output"
           {
             echo "diff<<EOF"
@@ -232,34 +242,9 @@ jobs:
 
       - name: Generate log metadata
         if: always() && inputs.enable-ci-logs
-        env:
-          META_REPOSITORY: ${{ github.repository }}
-          META_WORKFLOW: ${{ github.workflow }}
-          META_RUN_ID: ${{ github.run_id }}
-          META_RUN_ATTEMPT: ${{ github.run_attempt }}
-          META_REF: ${{ github.ref }}
-          META_SHA: ${{ github.sha }}
-          META_ACTOR: ${{ github.actor }}
-          META_EVENT: ${{ github.event_name }}
-          META_JOB_STATUS: ${{ job.status }}
-        run: |
-          python3 -c "
-          import json, os, datetime
-          meta = {
-              'repository': os.environ['META_REPOSITORY'],
-              'workflow': os.environ['META_WORKFLOW'],
-              'run_id': os.environ['META_RUN_ID'],
-              'run_attempt': os.environ['META_RUN_ATTEMPT'],
-              'ref': os.environ['META_REF'],
-              'sha': os.environ['META_SHA'],
-              'actor': os.environ['META_ACTOR'],
-              'event': os.environ['META_EVENT'],
-              'job_status': os.environ['META_JOB_STATUS'],
-              'timestamp': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-          }
-          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
-              json.dump(meta, f, indent=2)
-          "
+        uses: Specter099/.github/.github/actions/log-metadata@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
 
       - name: Ship CI logs
         if: always() && inputs.enable-ci-logs

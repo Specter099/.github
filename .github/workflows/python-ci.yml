@@ -3,10 +3,8 @@ name: Python CI
 # Requires callers to include ruff and pytest in their requirements file.
 # Install via requirements-path (default) or override with install-command.
 #
-# Callers should set concurrency at the workflow level:
-#   concurrency:
-#     group: python-ci-${{ github.ref }}
-#     cancel-in-progress: true
+# Concurrency is handled by this workflow's own job — callers don't need to
+# set it themselves.
 
 "on":
   workflow_call:
@@ -55,7 +53,7 @@ name: Python CI
       enable-ci-logs:
         description: Ship detailed step logs to S3/CloudWatch
         type: boolean
-        default: true
+        default: false
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
@@ -88,7 +86,10 @@ jobs:
   ci:
     name: "Lint, Secrets & Test (py${{ matrix.python-version }})"
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
+    concurrency:
+      group: python-ci-${{ github.ref }}-${{ matrix.python-version }}
+      cancel-in-progress: true
     permissions:
       # id-token: write is needed for OIDC when enable-ci-logs is true.
       # The OIDC credential step itself is gated behind enable-ci-logs.
@@ -240,34 +241,9 @@ jobs:
 
       - name: Generate log metadata
         if: always() && inputs.enable-ci-logs && env.AWS_ROLE_ARN != ''
-        env:
-          META_REPOSITORY: ${{ github.repository }}
-          META_WORKFLOW: ${{ github.workflow }}
-          META_RUN_ID: ${{ github.run_id }}
-          META_RUN_ATTEMPT: ${{ github.run_attempt }}
-          META_REF: ${{ github.ref }}
-          META_SHA: ${{ github.sha }}
-          META_ACTOR: ${{ github.actor }}
-          META_EVENT: ${{ github.event_name }}
-          META_JOB_STATUS: ${{ job.status }}
-        run: |
-          python3 -c "
-          import json, os, datetime
-          meta = {
-              'repository': os.environ['META_REPOSITORY'],
-              'workflow': os.environ['META_WORKFLOW'],
-              'run_id': os.environ['META_RUN_ID'],
-              'run_attempt': os.environ['META_RUN_ATTEMPT'],
-              'ref': os.environ['META_REF'],
-              'sha': os.environ['META_SHA'],
-              'actor': os.environ['META_ACTOR'],
-              'event': os.environ['META_EVENT'],
-              'job_status': os.environ['META_JOB_STATUS'],
-              'timestamp': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-          }
-          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
-              json.dump(meta, f, indent=2)
-          "
+        uses: Specter099/.github/.github/actions/log-metadata@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
 
       - name: Ship CI logs
         if: always() && inputs.enable-ci-logs && env.AWS_ROLE_ARN != ''

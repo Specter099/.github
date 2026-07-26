@@ -30,6 +30,10 @@ on:
           secret set to the IAM role ARN to assume via OIDC.
         type: string
         default: production
+    secrets:
+      AWS_ROLE_ARN:
+        description: IAM role ARN for OIDC federation
+        required: true
 
 permissions:
   id-token: write  # OIDC token for AWS authentication
@@ -39,7 +43,7 @@ jobs:
   check-no-public-access:
     name: Check No Public Access
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     environment: ${{ inputs.environment }}
 
     steps:

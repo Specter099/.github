@@ -23,7 +23,7 @@ jobs:
   validate-bucket-names:
     name: S3 Bucket Naming Convention
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: write
