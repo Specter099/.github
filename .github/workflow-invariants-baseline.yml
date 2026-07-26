@@ -52,6 +52,8 @@ accepted:
     review: S6
   - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/log-metadata@main"
     review: new-action-2026-07-26
+  - fingerprint: "WF004:.github/workflows/python-ci.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
   - fingerprint: "WF004:.github/workflows/python-ci.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
   - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/setup-cdk@main"
@@ -79,8 +81,6 @@ accepted:
 
   # --- WF008: no concurrency group on PR-check workflows --------------------
   # Review finding E1. Likely the largest runner-minute saving available.
-  - fingerprint: "WF008:.github/workflows/python-ci.yml:job 'ci'"
-    review: E1
   - fingerprint: "WF008:.github/workflows/self-test.yml:job 'test'"
     review: E1
 
