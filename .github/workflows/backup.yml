@@ -7,6 +7,14 @@ on:
 
 jobs:
   backup:
+    # With restricted default workflow permissions, a reusable workflow's job
+    # requesting id-token: write fails at startup unless the caller job
+    # explicitly grants it - this job wasn't granting anything, so every run
+    # since this workflow started calling repo-backup.yml has failed before
+    # any job was even scheduled.
+    permissions:
+      id-token: write
+      contents: read
     uses: ./.github/workflows/repo-backup.yml
     with:
       s3-bucket: ${{ vars.BACKUP_S3_BUCKET }}
