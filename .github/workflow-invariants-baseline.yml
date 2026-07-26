@@ -22,8 +22,6 @@ accepted:
   # other workflows already do it correctly and serve as the pattern.
   - fingerprint: "WF005:.github/workflows/access-analyzer-check.yml:references secrets.AWS_ROLE_ARN but does not declare it"
     review: S4
-  - fingerprint: "WF005:.github/workflows/cdk-deploy.yml:references secrets.AWS_ROLE_ARN but does not declare it"
-    review: S4
   - fingerprint: "WF005:.github/workflows/repo-backup.yml:references secrets.AWS_ROLE_ARN but does not declare it"
     review: S4
   - fingerprint: "WF005:.github/workflows/static-site-deploy.yml:references secrets.AWS_ROLE_ARN but does not declare it"
@@ -46,6 +44,8 @@ accepted:
     review: S6
   - fingerprint: "WF004:.github/workflows/cdk-deploy.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
+  - fingerprint: "WF004:.github/workflows/cdk-deploy.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
   - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/setup-cdk@main"
     review: S6
   - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/access-analyzer@main"

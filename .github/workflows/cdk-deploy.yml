@@ -26,10 +26,17 @@ on:
         description: URL to curl after deploy for smoke test (optional)
         type: string
         default: ""
+      smoke-test-required:
+        description: >-
+          Fail the job when the smoke test returns a bad/unreachable status.
+          Set false for repos with known post-deploy propagation delay
+          (e.g. CloudFront) where a warn-only smoke test is preferred.
+        type: boolean
+        default: true
       enable-ci-logs:
         description: Ship detailed step logs to S3/CloudWatch
         type: boolean
-        default: true
+        default: false
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
@@ -48,11 +55,15 @@ on:
           ci-log-destination includes 'cloudwatch'.
         type: string
         default: ""
+    secrets:
+      AWS_ROLE_ARN:
+        description: IAM role ARN for OIDC federation
+        required: true
 jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     concurrency:
       group: cdk-deploy-${{ inputs.environment }}-${{ github.ref }}
       cancel-in-progress: false
@@ -93,6 +104,17 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ inputs.aws-region }}
 
+      - name: CDK Synth
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            cdk synth 2>&1 | tee "$RUNNER_TEMP/ci-logs/cdk-synth.log"
+          else
+            cdk synth
+          fi
+
       - name: CDK Deploy
         env:
           CDK_STACKS: ${{ inputs.stacks }}
@@ -106,12 +128,14 @@ jobs:
             echo "::error::invalid stacks input '$CDK_STACKS' — must be '--all' or space-separated stack names"
             exit 1
           fi
+          # --app cdk.out reuses the "CDK Synth" step above instead of
+          # letting `cdk deploy` re-synthesize from scratch.
           if [ "$ENABLE_LOGS" = "true" ]; then
-            cdk deploy $CDK_STACKS --require-approval never --verbose --outputs-file outputs.json 2>&1 \
+            cdk deploy $CDK_STACKS --app cdk.out --require-approval never --verbose --outputs-file outputs.json 2>&1 \
               | awk '{ print strftime("%Y-%m-%dT%H:%M:%SZ"), $0; fflush() }' \
               | tee "$RUNNER_TEMP/ci-logs/cdk-deploy.log"
           else
-            cdk deploy $CDK_STACKS --require-approval never --verbose --outputs-file outputs.json
+            cdk deploy $CDK_STACKS --app cdk.out --require-approval never --verbose --outputs-file outputs.json
           fi
 
       - name: Upload stack outputs
@@ -138,6 +162,7 @@ jobs:
         if: ${{ inputs.smoke-test-url != '' }}
         env:
           SMOKE_TEST_URL: ${{ inputs.smoke-test-url }}
+          SMOKE_TEST_REQUIRED: ${{ inputs.smoke-test-required }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
@@ -147,8 +172,13 @@ jobs:
             echo "Smoke test HTTP status: $status"
             echo "## Smoke Test" >> "$GITHUB_STEP_SUMMARY"
             echo "Response from \`$SMOKE_TEST_URL\`: **HTTP $status**" >> "$GITHUB_STEP_SUMMARY"
-            if [[ "$status" == "000" ]]; then
-              echo "::warning::Smoke test: curl failed or timed out"
+            if [[ "$status" == "000" || "$status" -ge "400" ]]; then
+              if [ "$SMOKE_TEST_REQUIRED" = "true" ]; then
+                echo "::error::Smoke test failed: HTTP $status from $SMOKE_TEST_URL"
+                return 1
+              else
+                echo "::warning::Smoke test failed (non-blocking, smoke-test-required is false): HTTP $status"
+              fi
             else
               echo "Smoke test passed — endpoint is reachable."
             fi
@@ -163,34 +193,9 @@ jobs:
 
       - name: Generate log metadata
         if: always() && inputs.enable-ci-logs
-        env:
-          META_REPOSITORY: ${{ github.repository }}
-          META_WORKFLOW: ${{ github.workflow }}
-          META_RUN_ID: ${{ github.run_id }}
-          META_RUN_ATTEMPT: ${{ github.run_attempt }}
-          META_REF: ${{ github.ref }}
-          META_SHA: ${{ github.sha }}
-          META_ACTOR: ${{ github.actor }}
-          META_EVENT: ${{ github.event_name }}
-          META_JOB_STATUS: ${{ job.status }}
-        run: |
-          python3 -c "
-          import json, os, datetime
-          meta = {
-              'repository': os.environ['META_REPOSITORY'],
-              'workflow': os.environ['META_WORKFLOW'],
-              'run_id': os.environ['META_RUN_ID'],
-              'run_attempt': os.environ['META_RUN_ATTEMPT'],
-              'ref': os.environ['META_REF'],
-              'sha': os.environ['META_SHA'],
-              'actor': os.environ['META_ACTOR'],
-              'event': os.environ['META_EVENT'],
-              'job_status': os.environ['META_JOB_STATUS'],
-              'timestamp': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-          }
-          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
-              json.dump(meta, f, indent=2)
-          "
+        uses: Specter099/.github/.github/actions/log-metadata@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
 
       - name: Ship CI logs
         if: always() && inputs.enable-ci-logs
