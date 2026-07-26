@@ -11,7 +11,10 @@ jobs:
   test:
     name: Lint & Test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
+    concurrency:
+      group: self-test-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
     steps:

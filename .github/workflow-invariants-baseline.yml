@@ -79,10 +79,6 @@ accepted:
   - fingerprint: "WF007:.github/workflows/static-site-review.yml:output 'diff' uses fixed heredoc delimiter 'EOF'"
     review: S5
 
-  # --- WF008: no concurrency group on PR-check workflows --------------------
-  # Review finding E1. Likely the largest runner-minute saving available.
-  - fingerprint: "WF008:.github/workflows/self-test.yml:job 'test'"
-    review: E1
 
   # --- WF011: vestigial input ----------------------------------------------
   # Kept deliberately for caller interface parity with the deploy workflows;
