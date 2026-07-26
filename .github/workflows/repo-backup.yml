@@ -19,6 +19,10 @@ on:
         description: GitHub environment whose secrets contain AWS_ROLE_ARN
         type: string
         default: "backup"
+    secrets:
+      AWS_ROLE_ARN:
+        description: IAM role ARN for OIDC federation
+        required: true
   workflow_dispatch:
     inputs:
       s3-bucket:
@@ -42,7 +46,7 @@ jobs:
   backup:
     name: Backup to S3
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write
