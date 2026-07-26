@@ -24,8 +24,6 @@ accepted:
     review: S4
   - fingerprint: "WF005:.github/workflows/repo-backup.yml:references secrets.AWS_ROLE_ARN but does not declare it"
     review: S4
-  - fingerprint: "WF005:.github/workflows/static-site-deploy.yml:references secrets.AWS_ROLE_ARN but does not declare it"
-    review: S4
 
   # --- WF012: README documents an input that does not exist -----------------
   # Review finding "Documentation drift" #1. python-ci's input is
@@ -58,6 +56,8 @@ accepted:
     review: S6
   - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/setup-cdk@main"
     review: S6
+  - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
   - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
   - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/setup-cdk@main"
