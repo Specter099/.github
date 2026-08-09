@@ -24,10 +24,16 @@ on:
         description: >-
           IAM role ARN for OIDC federation. Optional: callers migrated to a
           per-repo OIDC role supply the ARN as an AWS_ROLE_ARN repository
-          VARIABLE instead, which the step below falls back to. Left
-          required, a migrated caller's `secrets: inherit` would have
-          nothing to pass and the run would fail on the missing required
-          secret before any expression was evaluated.
+          VARIABLE instead, which the step below falls back to.
+
+          Declared optional because the declaration should describe what is
+          actually true - a migrated caller has no such secret to pass.
+          Whether GitHub would have ENFORCED `required: true` against a
+          caller using `secrets: inherit` is not settled: the documentation
+          does not say, and reports differ on whether inherit skips
+          required-secret validation and resolves the missing value to an
+          empty string. Optional is correct either way; do not restore
+          `required: true` on the assumption that it was only decorative.
         required: false
   workflow_dispatch:
     inputs:
@@ -104,16 +110,25 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d  # v6.2.2
         with:
-          # Secret first, variable second - deliberately, and in that order.
-          # GitHub resolves a secret ahead of a same-named variable anyway,
-          # so this preserves today's behaviour exactly for every caller
-          # that still has the secret, while letting a caller migrate on its
-          # own schedule: deleting its AWS_ROLE_ARN secret is what switches
-          # it to its per-repo role. No flag day, and re-adding the secret
-          # reverts it.
+          # Secret first, variable second. `secrets` and `vars` are separate
+          # contexts with no precedence between them - the ordering in this
+          # `||` is the ONLY thing that makes the secret win, so do not
+          # reorder it. That ordering is what preserves today's behaviour
+          # exactly for every caller that still has a secret, while letting
+          # a caller migrate on its own schedule: deleting its AWS_ROLE_ARN
+          # secret is what switches it to its per-repo role. No flag day,
+          # and re-adding the secret reverts it.
+          #
+          # "Deleting its secret" means at EVERY scope. This job binds to an
+          # environment, and an environment secret shadows a repository
+          # secret of the same name, so a caller holding both that deletes
+          # only the repository one keeps running on the old shared role -
+          # green, and not migrated.
           #
           # `vars` here resolves against the CALLER's repository, not this
-          # one. See terraform-personal/MIGRATION_PLAN.md in github-as-code.
+          # one: "For reusable workflows, the variables from the caller
+          # workflow's repository are used."
+          # https://docs.github.com/en/actions/learn-github-actions/variables
           role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
           aws-region: ${{ inputs.aws-region }}
 
