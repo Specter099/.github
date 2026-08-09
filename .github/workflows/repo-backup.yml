@@ -128,7 +128,7 @@ jobs:
           # `vars` here resolves against the CALLER's repository, not this
           # one: "For reusable workflows, the variables from the caller
           # workflow's repository are used."
-          # https://docs.github.com/en/actions/learn-github-actions/variables
+          # https://docs.github.com/en/actions/reference/workflows-and-actions/variables
           role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
           aws-region: ${{ inputs.aws-region }}
 
