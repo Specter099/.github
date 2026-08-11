@@ -24,6 +24,9 @@ jobs:
     name: S3 Bucket Naming Convention
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: validate-bucket-names-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: write
@@ -39,6 +42,11 @@ jobs:
         with:
           repository: Specter099/.github
           path: .shared-github
+          # Only the validation script is needed — skip cloning the rest of
+          # this repo. ref pinning is tracked separately (S6 / WF004 baseline).
+          sparse-checkout: |
+            scripts
+          sparse-checkout-cone-mode: true
           persist-credentials: false
 
       - name: Setup Python

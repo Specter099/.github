@@ -38,7 +38,7 @@ name: CDK Review
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
-        default: "both"
+        default: "s3"
       ci-log-s3-bucket:
         description: >-
           S3 bucket for CI logs. Empty/unset falls back to
@@ -88,15 +88,18 @@ jobs:
         with:
           cdk-version: ${{ inputs.cdk-version != '' && inputs.cdk-version || vars.CDK_CLI_VERSION }}
 
-      - name: Install dependencies
+      # setup-cdk already installs requirements.txt — only bring in
+      # requirements-dev.txt here (ruff, pytest, pip-audit, …).
+      - name: Install dev dependencies
         run: |
-          pip install -r requirements.txt
           if [ -f requirements-dev.txt ]; then
             pip install -r requirements-dev.txt
           fi
 
+      # Cheap static checks before any AWS / synth work so a lint or SAST
+      # failure skips the expensive credentialed path.
       - name: Lint (ruff)
-        if: hashFiles('requirements-dev.txt') != '' && success()
+        if: hashFiles('requirements-dev.txt') != ''
         env:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
@@ -114,8 +117,20 @@ jobs:
             _run_lint
           fi
 
+      - name: SAST scan (bandit)
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          pip install bandit
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            bandit -r . -ll --exclude ./.venv,./cdk.out,./lambda_layer 2>&1 | tee "$RUNNER_TEMP/ci-logs/bandit.log"
+          else
+            bandit -r . -ll --exclude ./.venv,./cdk.out,./lambda_layer
+          fi
+
       - name: Unit tests
-        if: hashFiles('tests/**') != '' && success()
+        if: hashFiles('tests/**') != ''
         env:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
@@ -182,18 +197,6 @@ jobs:
         with:
           template-dir: cdk.out
           aws-region: ${{ inputs.aws-region }}
-
-      - name: SAST scan (bandit)
-        env:
-          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
-        run: |
-          set -o pipefail
-          pip install bandit
-          if [ "$ENABLE_LOGS" = "true" ]; then
-            bandit -r . -ll --exclude ./.venv,./cdk.out,./lambda_layer 2>&1 | tee "$RUNNER_TEMP/ci-logs/bandit.log"
-          else
-            bandit -r . -ll --exclude ./.venv,./cdk.out,./lambda_layer
-          fi
 
       - name: CDK Nag (informational)
         if: env.AWS_ROLE_ARN != ''
