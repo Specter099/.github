@@ -49,6 +49,14 @@ on:
           (e.g. CloudFront) where a warn-only smoke test is preferred.
         type: boolean
         default: true
+      enable-docker-bundling:
+        description: >-
+          Set up QEMU (arm64) and Docker Buildx before synth/deploy. Needed
+          only when the CDK app bundles Lambda or container assets for
+          arm64 via Docker. Pure S3/CloudFront static sites should leave
+          this false (default) to skip ~30–60s of setup per deploy.
+        type: boolean
+        default: false
       enable-ci-logs:
         description: Ship detailed step logs to S3/CloudWatch
         type: boolean
@@ -56,7 +64,7 @@ on:
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
-        default: "both"
+        default: "s3"
       ci-log-s3-bucket:
         description: >-
           S3 bucket for CI logs. Empty/unset falls back to
@@ -135,11 +143,13 @@ jobs:
           aws-region: ${{ inputs.aws-region }}
 
       - name: Set up QEMU
+        if: ${{ inputs.enable-docker-bundling }}
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8  # v4.2.0
         with:
           platforms: arm64
 
       - name: Set up Docker Buildx
+        if: ${{ inputs.enable-docker-bundling }}
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
 
       - name: CDK Synth

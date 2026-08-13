@@ -18,6 +18,28 @@ Reusable workflows and composite actions for CDK projects.
 
 ---
 
+## Saving CI minutes
+
+The reusable **check** workflows (`cdk-review`, `static-site-review`, `python-ci`, `gitleaks`, `validate-bucket-names`, `access-analyzer-check`) skip Dependabot PRs on the job (`if: ${{ github.actor != 'dependabot[bot]' }}`). A skipped required status check is treated as passing, so merge is not blocked. Deploy and backup workflows are not skipped — those run after merge.
+
+Reusable `workflow_call` targets cannot filter paths. Add this to every caller PR workflow so docs-only PRs don't pay for synth, npm, or Access Analyzer:
+
+```yaml
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+```
+
+`scripts/check_workflow_invariants.py` enforces both conventions when run against a caller (`WF015` skip-Dependabot, `WF016` paths-ignore). `self-test.yml` in this repo already has both.
+
+Static-site repos that bundle arm64 Docker/Lambda assets must pass `enable-docker-bundling: true` to `static-site-deploy`; the default is `false` so pure S3/CloudFront sites skip QEMU/Buildx setup.
+
+---
+
 ## CDK Workflows
 
 ### `cdk-review`
@@ -260,7 +282,8 @@ caller repo, which is where trigger-convention violations tend to live.
 that no off-the-shelf linter knows about — undeclared `workflow_call` secrets,
 unpinned internal actions, `pull_request_target`, script injection into `run:`,
 checks leaking into deploy workflows, README examples passing inputs that don't
-exist. `--list-checks` prints all of them.
+exist, Dependabot skips on check jobs, and `paths-ignore` on PR triggers.
+`--list-checks` prints all of them.
 
 Findings that predate the checker are accepted in
 `.github/workflow-invariants-baseline.yml`. That file is a **work list, not a

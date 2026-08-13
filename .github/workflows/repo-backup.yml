@@ -59,6 +59,11 @@ jobs:
     name: Backup to S3
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    # Snapshot of HEAD only (git archive), so a shallow checkout is enough.
+    # cancel-in-progress: false — never abort a mid-upload backup.
+    concurrency:
+      group: repo-backup-${{ inputs.environment }}-${{ github.repository }}
+      cancel-in-progress: false
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write
@@ -66,7 +71,6 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
-          fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve inputs
@@ -90,7 +94,7 @@ jobs:
           FILENAME: ${{ steps.vars.outputs.filename }}
         run: |
           git archive --format=zip --output="$FILENAME" HEAD
-          SIZE=$(du -sh "$FILENAME" | cut -f1)
+          SIZE=$(stat -c %s "$FILENAME")
           echo "ARCHIVE_SIZE=$SIZE" >> "$GITHUB_ENV"
 
       # Now that the secret is optional, "neither is set" is a reachable

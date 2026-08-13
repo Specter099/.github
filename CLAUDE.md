@@ -59,7 +59,7 @@ python scripts/check_no_public_access.py --template-dir /path/to/cdk.out
   workflow-invariants-baseline.yml  # Accepted (pre-existing) invariant findings — a work list
 scripts/
   local-ci.sh                 # The pre-commit gate. Same stages as self-test.yml
-  check_workflow_invariants.py # Org workflow conventions (WF001–WF014)
+  check_workflow_invariants.py # Org workflow conventions (WF001–WF016)
   check_no_public_access.py   # CLI for IAM Access Analyzer CheckNoPublicAccess API
   validate_bucket_names.py    # AST-based S3 bucket_name= convention checker
 docs/
@@ -79,6 +79,8 @@ All workflows use `workflow_call` triggers — caller repos reference them with 
 - All checks (review, security, tests, bucket-name validation) MUST trigger on `pull_request: [main]` only.
 - `push: [main]` is reserved for deploy workflows (and scheduled backups).
 - A caller workflow must never trigger on both `pull_request` and `push: [main]` — that double-runs the same checks at merge. Merge protection covers main-branch correctness; PR checks are the gate.
+- Add `paths-ignore: ['**/*.md', 'docs/**', 'LICENSE']` on every PR-triggered check so docs-only PRs skip CI. Reusable `workflow_call` targets cannot filter paths; this has to live on the caller.
+- Check workflows skip Dependabot PRs (`if: ${{ github.actor != 'dependabot[bot]' }}` on the job). The shared reusable workflows already do this; a skipped required check is treated as passing.
 
 **PR diff commenting:** `cdk-review` and `static-site-review` post CDK diff output as a PR comment, updating in place on re-runs.
 

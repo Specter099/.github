@@ -46,6 +46,11 @@ runs:
       with:
         python-version: "3.12"
         cache: pip
+        # Tie the pip cache to the caller's requirements file (default
+        # requirements.txt). Without this, setup-python hashes
+        # **/requirements.txt which misses monorepo callers that pass
+        # e.g. infra/requirements.txt.
+        cache-dependency-path: ${{ inputs.requirements-path }}
 
     # Exactly one of the two reaches setup-node: given both, it honours
     # node-version and ignores the file, so the unused one must come through
@@ -71,11 +76,19 @@ runs:
         node-version-file: ${{ steps.node-ver.outputs.file }}
         node-version: ${{ steps.node-ver.outputs.version }}
 
+    # Cache ~/.npm for the global CDK CLI install below. Include any
+    # package-lock.json hash so static-site callers (npm ci later in the
+    # job) invalidate when frontend deps change. Without the hash, an exact
+    # key hit skips the post-run save and the cache freezes forever.
+    # restore-keys still lets a lockfile miss reuse the prior CDK-version
+    # cache (CDK CLI tarball) as a partial hit.
     - name: Cache npm
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/.npm
-        key: npm-${{ runner.os }}-cdk-${{ steps.cdk-ver.outputs.version }}
+        key: npm-${{ runner.os }}-cdk-${{ steps.cdk-ver.outputs.version }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          npm-${{ runner.os }}-cdk-${{ steps.cdk-ver.outputs.version }}-
 
     - name: Install CDK CLI
       shell: bash
