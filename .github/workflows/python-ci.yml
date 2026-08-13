@@ -57,7 +57,7 @@ name: Python CI
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
-        default: "both"
+        default: "s3"
       ci-log-s3-bucket:
         description: >-
           S3 bucket for CI logs. Empty/unset falls back to
@@ -85,6 +85,10 @@ name: Python CI
 jobs:
   ci:
     name: "Lint, Secrets & Test (py${{ matrix.python-version }})"
+    # Skip Dependabot PRs. A skipped required check is treated as passing
+    # by branch protection. The group key includes the matrix version so
+    # legs don't cancel each other.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
     concurrency:
@@ -120,16 +124,15 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'pip'
-
-      - name: Upgrade pip
-        run: pip install --upgrade pip
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-path }}
 
       - name: Install dev dependencies
         env:
           INSTALL_COMMAND: ${{ inputs.install-command }}
           REQUIREMENTS_PATH: ${{ inputs.requirements-path }}
         run: |
+          pip install --upgrade pip
           if [ -n "$INSTALL_COMMAND" ]; then
             # No eval: expand unquoted so the shell word-splits but never
             # re-parses operators — `;`, `|`, `&&`, redirects, and globs in

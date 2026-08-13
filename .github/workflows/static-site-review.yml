@@ -49,7 +49,7 @@ on:
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
-        default: "both"
+        default: "s3"
       ci-log-s3-bucket:
         description: >-
           S3 bucket for CI logs. Empty/unset falls back to
@@ -74,6 +74,9 @@ on:
 jobs:
   review:
     name: Lint, Test & Diff
+    # Skip Dependabot PRs (typically SHA-pin / lockfile bumps). A skipped
+    # required check is treated as passing by branch protection.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:

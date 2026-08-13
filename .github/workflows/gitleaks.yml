@@ -6,8 +6,13 @@ on:
 jobs:
   gitleaks:
     name: Secret Scan
+    # Skip Dependabot PRs — they don't introduce new secret material.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: gitleaks-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       pull-requests: read

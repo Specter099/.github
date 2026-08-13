@@ -367,6 +367,101 @@ def test_wf008_ignores_non_check_workflows(tmp_path):
     assert "WF008" not in checks_hit(tmp_path)
 
 
+def test_wf008_flags_gitleaks_without_concurrency(tmp_path):
+    body = swap(CONCURRENCY_BLOCK, "")
+    write_workflow(tmp_path, "gitleaks.yml", body)
+    assert "WF008" in checks_hit(tmp_path)
+
+
+# --- WF015 skip Dependabot ------------------------------------------------
+
+
+SKIP_BOT_IF = "    if: ${{ github.actor != 'dependabot[bot]' }}\n"
+
+
+def test_wf015_flags_check_job_without_dependabot_skip(tmp_path):
+    write_workflow(tmp_path, "cdk-review.yml", CLEAN)
+    assert "WF015" in checks_hit(tmp_path)
+
+
+def test_wf015_accepts_dependabot_skip(tmp_path):
+    body = CLEAN.replace(
+        "    runs-on: ubuntu-latest\n",
+        SKIP_BOT_IF + "    runs-on: ubuntu-latest\n",
+    )
+    write_workflow(tmp_path, "cdk-review.yml", body)
+    assert "WF015" not in checks_hit(tmp_path)
+
+
+def test_wf015_ignores_deploy_workflows(tmp_path):
+    write_workflow(tmp_path, "cdk-deploy.yml", CLEAN)
+    assert "WF015" not in checks_hit(tmp_path)
+
+
+def test_wf015_skips_job_that_only_calls_a_reusable_workflow(tmp_path):
+    """The callee owns the skip — same exemption as WF001 for `uses:` jobs."""
+    write_workflow(
+        tmp_path,
+        "ci.yml",
+        """
+        name: Caller
+        on:
+          pull_request:
+            branches: [main]
+        jobs:
+          call:
+            uses: Specter099/.github/.github/workflows/python-ci.yml@"""
+        + "a" * 40
+        + """
+        """,
+    )
+    assert "WF015" not in checks_hit(tmp_path)
+
+
+# --- WF016 PR path filters ------------------------------------------------
+
+
+PATHS_IGNORE = (
+    "    paths-ignore:\n      - '**/*.md'\n      - docs/**\n      - LICENSE\n"
+)
+
+
+def test_wf016_flags_pr_check_without_path_filter(tmp_path):
+    write_workflow(tmp_path, "self-test.yml", CLEAN)
+    assert "WF016" in checks_hit(tmp_path)
+
+
+def test_wf016_accepts_paths_ignore(tmp_path):
+    body = CLEAN.replace(
+        "    branches: [main]\n",
+        "    branches: [main]\n" + PATHS_IGNORE,
+    )
+    write_workflow(tmp_path, "self-test.yml", body)
+    assert "WF016" not in checks_hit(tmp_path)
+
+
+def test_wf016_accepts_paths_allowlist(tmp_path):
+    body = CLEAN.replace(
+        "    branches: [main]\n",
+        "    branches: [main]\n    paths:\n      - 'src/**'\n",
+    )
+    write_workflow(tmp_path, "self-test.yml", body)
+    assert "WF016" not in checks_hit(tmp_path)
+
+
+def test_wf016_ignores_workflow_call_only(tmp_path):
+    """Reusable check workflows cannot set paths-ignore — callers must."""
+    write_workflow(
+        tmp_path, "python-ci.yml", CLEAN.replace(PR_TRIGGER, "  workflow_call:\n")
+    )
+    assert "WF016" not in checks_hit(tmp_path)
+
+
+def test_wf016_ignores_deploy_workflows(tmp_path):
+    write_workflow(tmp_path, "cdk-deploy.yml", CLEAN)
+    assert "WF016" not in checks_hit(tmp_path)
+
+
 # --- WF009 script injection ----------------------------------------------
 
 

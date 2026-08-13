@@ -40,7 +40,7 @@ on:
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
-        default: "both"
+        default: "s3"
       ci-log-s3-bucket:
         description: >-
           S3 bucket for CI logs. Empty/unset falls back to

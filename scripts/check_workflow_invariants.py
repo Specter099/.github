@@ -75,6 +75,14 @@ CHECKS: dict[str, tuple[str, str]] = {
         "error",
         "a workflow must not trigger on both pull_request and push:main",
     ),
+    "WF015": (
+        "warn",
+        "PR-check workflows must skip Dependabot so bot PRs don't burn minutes",
+    ),
+    "WF016": (
+        "warn",
+        "PR-check workflows must set paths-ignore so docs-only PRs skip CI",
+    ),
 }
 
 FAIL_SEVERITIES = {"error"}
@@ -186,6 +194,27 @@ def is_reusable(doc: dict) -> bool:
 def is_composite(doc: dict) -> bool:
     runs = doc.get("runs")
     return isinstance(runs, dict) and runs.get("using") == "composite"
+
+
+# Workflows that run *checks* (lint/test/scan/synth) rather than deploy or
+# backup. Filename-based so the same rules apply to this repo's reusable
+# workflows and to caller-repo wrappers named the same way.
+_CHECK_WORKFLOW_NAMES = {
+    "python-ci.yml",
+    "self-test.yml",
+    "gitleaks.yml",
+    "validate-bucket-names.yml",
+    "access-analyzer-check.yml",
+    "security.yml",
+}
+
+
+def is_check_workflow(rel: str) -> bool:
+    name = Path(rel).name.lower()
+    if "review" in name or name in _CHECK_WORKFLOW_NAMES:
+        return True
+    # Caller wrappers are commonly named ci.yml or python-ci.yml.
+    return name == "ci.yml" or name.endswith("-ci.yml")
 
 
 # ---------------------------------------------------------------------------
@@ -434,9 +463,7 @@ def check_output_heredoc(src: Source) -> list[Finding]:
 def check_concurrency(src: Source) -> list[Finding]:
     """WF008 — without cancel-in-progress, every push to a PR runs a full
     duplicate pipeline to completion."""
-    name = Path(src.rel).name
-    is_check = "review" in name or name in {"python-ci.yml", "self-test.yml"}
-    if not is_check:
+    if not is_check_workflow(src.rel):
         return []
     if "concurrency" in src.doc:
         return []
@@ -501,6 +528,54 @@ def check_unused_inputs(src: Source) -> list[Finding]:
                 )
             )
     return out
+
+
+def check_skip_dependabot(src: Source) -> list[Finding]:
+    """WF015 — Dependabot PRs (SHA pins, lockfile bumps) should not consume
+    billed runner minutes. A skipped required check is treated as passing.
+
+    Jobs that only `uses:` a reusable workflow are the caller's wrapper —
+    the callee owns the skip, so they are left alone (same shape as WF001).
+    """
+    if not is_check_workflow(src.rel):
+        return []
+    out = []
+    for name, job in jobs(src.doc).items():
+        if not isinstance(job, dict) or "uses" in job:
+            continue
+        cond = str(job.get("if", ""))
+        if "dependabot" not in cond.lower():
+            out.append(
+                Finding(
+                    "WF015", src.rel, line_of(src.text, f"{name}:"), f"job '{name}'"
+                )
+            )
+    return out
+
+
+def check_pr_path_filters(src: Source) -> list[Finding]:
+    """WF016 — docs-only PRs should not run the full CI suite.
+
+    `paths-ignore` can only live on a workflow's own `on.pull_request` block;
+    reusable `workflow_call` targets cannot filter paths, so this check is a
+    no-op for them. Callers (and this repo's self-test.yml) must set it.
+    """
+    if not is_check_workflow(src.rel):
+        return []
+    trig = triggers(src.doc)
+    if "pull_request" not in trig:
+        return []
+    pr = trig["pull_request"]
+    if isinstance(pr, dict) and (pr.get("paths-ignore") or pr.get("paths")):
+        return []
+    return [
+        Finding(
+            "WF016",
+            src.rel,
+            line_of(src.text, "pull_request"),
+            "pull_request trigger has no paths-ignore/paths filter",
+        )
+    ]
 
 
 def check_no_checks_in_deploy(src: Source) -> list[Finding]:
@@ -588,6 +663,8 @@ PER_FILE_CHECKS = (
     check_concurrency,
     check_run_interpolation,
     check_unused_inputs,
+    check_skip_dependabot,
+    check_pr_path_filters,
     check_no_checks_in_deploy,
 )
 

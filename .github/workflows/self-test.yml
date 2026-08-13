@@ -6,10 +6,19 @@ name: Self Test
 on:
   pull_request:
     branches: [main]
+    # Docs/license-only PRs don't touch YAML or Python — skip the gate.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
 
 jobs:
   test:
     name: Lint & Test
+    # Dependabot here only bumps SHA-pinned actions. yamllint/pytest/invariants
+    # don't change with a SHA swap, so don't spend runner minutes on it.
+    # A skipped required check is treated as passing by branch protection.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     concurrency:
