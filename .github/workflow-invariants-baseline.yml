@@ -1,0 +1,66 @@
+---
+# Accepted findings for scripts/check_workflow_invariants.py.
+#
+# This is a WORK LIST, not a suppression list. Every entry is a real finding
+# from the 2026-07-25 review (docs/reviews/2026-07-25-actions-security-
+# efficiency-review.md) that predates the checker. Baselining them keeps the
+# local gate green on a clean checkout so that *new* violations are the only
+# thing that fails — otherwise the gate is noise and people stop running it.
+#
+# Removing an entry is how you claim the fix: delete the line, run
+# `./scripts/local-ci.sh`, and it should stay green.
+#
+# To see everything including accepted findings:
+#   python scripts/check_workflow_invariants.py --strict --fail-on-warn
+#
+# Fingerprint format: <check-id>:<path>:<detail>  (no line number, so edits
+# above a finding don't silently un-baseline it)
+
+accepted:
+  # --- WF004: internal actions referenced at mutable @main ------------------
+  # Review finding S6 / TODO.md P0. A push to this repo's default branch
+  # propagates instantly to every caller, including deploys holding prod
+  # credentials. Fix: tag this repo and pin these by SHA.
+  - fingerprint: "WF004:.github/workflows/access-analyzer-check.yml:Specter099/.github/.github/actions/access-analyzer@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/cdk-deploy.yml:Specter099/.github/.github/actions/setup-cdk@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/cdk-deploy.yml:Specter099/.github/.github/actions/ship-logs@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/cdk-deploy.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
+  - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/setup-cdk@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/access-analyzer@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/ship-logs@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/cdk-review.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
+  - fingerprint: "WF004:.github/workflows/python-ci.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
+  - fingerprint: "WF004:.github/workflows/python-ci.yml:Specter099/.github/.github/actions/ship-logs@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/setup-cdk@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
+  - fingerprint: "WF004:.github/workflows/static-site-deploy.yml:Specter099/.github/.github/actions/ship-logs@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/setup-cdk@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/log-metadata@main"
+    review: new-action-2026-07-26
+  - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/ship-logs@main"
+    review: S6
+  - fingerprint: "WF004:.github/workflows/validate-bucket-names.yml:checkout of Specter099/.github with no ref (implicit default branch)"
+    review: S6
+
+  # --- WF011: vestigial input ----------------------------------------------
+  # Kept deliberately for caller interface parity with the deploy workflows;
+  # both declarations carry a comment saying so. Accepted indefinitely rather
+  # than pending a fix.
+  - fingerprint: "WF011:.github/workflows/cdk-review.yml:input 'smoke-test-url' is declared but never referenced"
+    review: intentional
+  - fingerprint: "WF011:.github/workflows/static-site-review.yml:input 'smoke-test-url' is declared but never referenced"
+    review: intentional

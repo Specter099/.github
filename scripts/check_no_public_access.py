@@ -8,6 +8,8 @@ from supported resource types, and calls CheckNoPublicAccess for each.
 Exit codes:
   0 — all resources pass (or no applicable resources found)
   1 — one or more resources grant public access (when --fail-on-public-access)
+  2 — scan incomplete: a template or policy could not be parsed, or an
+      Access Analyzer API call failed (no violations found otherwise)
 """
 
 import argparse
@@ -17,9 +19,84 @@ import sys
 from pathlib import Path
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
-# Maps CloudFormation resource type → (policy property, Access Analyzer resource type)
+
+def partition_for_region(region: str) -> str:
+    if region.startswith("us-gov-"):
+        return "aws-us-gov"
+    if region.startswith("cn-"):
+        return "aws-cn"
+    return "aws"
+
+
+def resolve_intrinsics(node, ctx):
+    """Best-effort resolution of CloudFormation pseudo-parameters and intrinsics
+    to literal values, so CheckNoPublicAccess receives a valid policy document.
+
+    CDK-synthesized policies routinely contain ``Fn::Join``, ``Fn::Sub``,
+    ``Fn::GetAtt`` and ``Ref`` to ``AWS::Partition``/``AWS::AccountId`` etc.
+    CheckNoPublicAccess rejects these with "policy in policyDocument is invalid",
+    which previously made every KMS-key / bucket-policy scan fail as incomplete.
+
+    Public-access is determined solely by ``Principal`` (and ``Condition``).
+    Pseudo-parameters are resolved exactly; any remaining ``Ref``/``Fn::GetAtt``
+    to a resource becomes a harmless placeholder ARN (never ``"*"``), so a
+    genuinely public ``Principal: "*"`` is still detected while the document
+    becomes syntactically valid.
+
+    Known false negative: a ``Principal`` given as ``{"Ref": "SomeParameter"}``
+    becomes a placeholder ARN, so a template whose parameter resolves to ``*``
+    at deploy time is not flagged.
+    """
+    pseudo = {
+        "AWS::Partition": ctx["partition"],
+        "AWS::Region": ctx["region"],
+        "AWS::AccountId": ctx["account"],
+        "AWS::URLSuffix": ctx["url_suffix"],
+    }
+    if isinstance(node, dict):
+        if len(node) == 1:
+            ((key, val),) = node.items()
+            if key == "Ref":
+                if isinstance(val, str) and val in pseudo:
+                    return pseudo[val]
+                return (
+                    f"arn:{ctx['partition']}:placeholder:{ctx['region']}:"
+                    f"{ctx['account']}:{val}"
+                )
+            if key == "Fn::Join" and isinstance(val, list) and len(val) == 2:
+                sep, parts = val
+                resolved = [resolve_intrinsics(p, ctx) for p in parts]
+                if all(isinstance(p, str) for p in resolved):
+                    return sep.join(resolved)
+                return node
+            if key == "Fn::Sub":
+                template, varmap = (
+                    (val[0], val[1]) if isinstance(val, list) else (val, {})
+                )
+                out = template
+                substitutions = dict(pseudo)
+                for name, value in varmap.items():
+                    resolved = resolve_intrinsics(value, ctx)
+                    substitutions[name] = resolved if isinstance(resolved, str) else ""
+                for name, value in substitutions.items():
+                    out = out.replace("${" + name + "}", value)
+                return out
+            if key == "Fn::GetAtt":
+                logical = val[0] if isinstance(val, list) else str(val)
+                return (
+                    f"arn:{ctx['partition']}:placeholder:{ctx['region']}:"
+                    f"{ctx['account']}:{logical}"
+                )
+        return {k: resolve_intrinsics(v, ctx) for k, v in node.items()}
+    if isinstance(node, list):
+        return [resolve_intrinsics(v, ctx) for v in node]
+    return node
+
+
+# Maps CloudFormation resource type → (policy property, Access Analyzer resource
+# type). A dotted property is a path into nested properties.
 POLICY_MAP = {
     "AWS::S3::BucketPolicy": ("PolicyDocument", "AWS::S3::Bucket"),
     "AWS::SQS::QueuePolicy": ("PolicyDocument", "AWS::SQS::Queue"),
@@ -30,44 +107,75 @@ POLICY_MAP = {
         "ResourcePolicy",
         "AWS::SecretsManager::Secret",
     ),
+    "AWS::S3::AccessPoint": ("Policy", "AWS::S3::AccessPoint"),
+    "AWS::EFS::FileSystem": ("FileSystemPolicy", "AWS::EFS::FileSystem"),
+    "AWS::OpenSearchService::Domain": (
+        "AccessPolicies",
+        "AWS::OpenSearchService::Domain",
+    ),
+    "AWS::ApiGateway::RestApi": ("Policy", "AWS::ApiGateway::RestApi"),
+    "AWS::Backup::BackupVault": ("AccessPolicy", "AWS::Backup::BackupVault"),
+    "AWS::Kinesis::ResourcePolicy": ("ResourcePolicy", "AWS::Kinesis::Stream"),
+    "AWS::DynamoDB::Table": (
+        "ResourcePolicy.PolicyDocument",
+        "AWS::DynamoDB::Table",
+    ),
     # AWS::IAM::Role intentionally excluded: CDK trust policies contain intrinsic
     # functions (Fn::Sub, Ref, Fn::If) that CheckNoPublicAccess cannot evaluate,
     # and OIDC trust policies trigger false positives.
 }
 
-# CDK metadata files to skip
-SKIP_FILES = {"manifest.json", "tree.json", "cdk.out"}
-
 
 def find_templates(template_dir: Path) -> list[Path]:
-    templates = []
-    for path in sorted(template_dir.rglob("*.template.json")):
-        if path.name not in SKIP_FILES and not path.name.startswith("asset."):
-            templates.append(path)
-    return templates
+    return [
+        path
+        for path in sorted(template_dir.rglob("*.template.json"))
+        if not path.name.startswith("asset.")
+    ]
 
 
-def extract_policies(template: dict) -> list[tuple[str, str, dict]]:
-    """Return list of (logical_id, analyzer_resource_type, policy_document)."""
+def extract_policies(
+    template: dict,
+) -> tuple[list[tuple[str, str, dict]], list[tuple[str, str]]]:
+    """
+    Return (policies, errors).
+
+    policies — list of (logical_id, analyzer_resource_type, policy_document).
+    Policy documents serialized as JSON strings (valid CloudFormation) are
+    parsed into dicts. errors — list of (logical_id, message) for policies
+    that could not be parsed.
+    """
     results = []
+    errors = []
     resources = template.get("Resources", {})
     for logical_id, resource in resources.items():
         cf_type = resource.get("Type", "")
         if cf_type not in POLICY_MAP:
             continue
         policy_prop, analyzer_type = POLICY_MAP[cf_type]
-        policy_doc = resource.get("Properties", {}).get(policy_prop)
+        policy_doc = resource.get("Properties", {})
+        for key in policy_prop.split("."):
+            policy_doc = policy_doc.get(key) if isinstance(policy_doc, dict) else None
         if policy_doc is None:
             continue
+        if isinstance(policy_doc, str):
+            try:
+                policy_doc = json.loads(policy_doc)
+            except json.JSONDecodeError as exc:
+                errors.append((logical_id, f"unparseable policy string: {exc}"))
+                continue
         results.append((logical_id, analyzer_type, policy_doc))
-    return results
+    return results, errors
 
 
-def check_policy(client, logical_id: str, analyzer_type: str, policy_doc: dict) -> dict:
+def check_policy(
+    client, logical_id: str, analyzer_type: str, policy_doc: dict, ctx: dict
+) -> dict:
     """Call CheckNoPublicAccess and return a result dict."""
     try:
+        resolved = resolve_intrinsics(policy_doc, ctx)
         resp = client.check_no_public_access(
-            policyDocument=json.dumps(policy_doc),
+            policyDocument=json.dumps(resolved),
             resourceType=analyzer_type,
         )
         is_public = resp.get("result") == "FAIL"
@@ -78,9 +186,14 @@ def check_policy(client, logical_id: str, analyzer_type: str, policy_doc: dict) 
             "public": is_public,
             "reasons": reasons,
         }
-    except ClientError as exc:
-        code = exc.response["Error"]["Code"]
-        msg = exc.response["Error"]["Message"]
+    except (ClientError, BotoCoreError) as exc:
+        # BotoCoreError covers NoCredentialsError / EndpointConnectionError,
+        # which would otherwise escape as a traceback instead of exit 2.
+        if isinstance(exc, ClientError):
+            code = exc.response["Error"]["Code"]
+            msg = exc.response["Error"]["Message"]
+        else:
+            code, msg = type(exc).__name__, str(exc)
         return {
             "logical_id": logical_id,
             "resource_type": analyzer_type,
@@ -156,7 +269,20 @@ def main() -> int:
 
     client = boto3.client("accessanalyzer", region_name=args.aws_region)
 
+    # Context for resolving CloudFormation pseudo-parameters to literals.
+    try:
+        account = boto3.client("sts").get_caller_identity()["Account"]
+    except (ClientError, BotoCoreError):
+        account = "000000000000"
+    ctx = {
+        "partition": partition_for_region(args.aws_region),
+        "region": args.aws_region,
+        "account": account,
+        "url_suffix": "amazonaws.com",
+    }
+
     total_violations = 0
+    total_errors = 0
 
     for template_path in templates:
         template_name = template_path.name
@@ -166,21 +292,26 @@ def main() -> int:
             template = json.loads(template_path.read_text())
         except json.JSONDecodeError as exc:
             print(f"::warning::Could not parse {template_name}: {exc}")
+            total_errors += 1
             continue
 
-        policies = extract_policies(template)
-        if not policies:
+        policies, policy_errors = extract_policies(template)
+        for logical_id, message in policy_errors:
+            print(f"  ⚠  {logical_id} — error: {message}")
+            total_errors += 1
+        if not policies and not policy_errors:
             print("  No applicable resources found — skipping")
             write_summary([], template_name)
             continue
 
         findings = []
         for logical_id, analyzer_type, policy_doc in policies:
-            result = check_policy(client, logical_id, analyzer_type, policy_doc)
+            result = check_policy(client, logical_id, analyzer_type, policy_doc, ctx)
             findings.append(result)
 
             if "error" in result:
                 print(f"  ⚠  {logical_id} ({analyzer_type}) — error: {result['error']}")
+                total_errors += 1
             elif result["public"]:
                 total_violations += 1
                 reasons = (
@@ -198,6 +329,13 @@ def main() -> int:
     if total_violations > 0:
         print(f"::error::{total_violations} resource(s) grant public access")
         return 1 if args.fail_on_public_access else 0
+
+    if total_errors > 0:
+        print(
+            f"::error::{total_errors} template(s)/resource(s) could not be "
+            "checked — scan incomplete"
+        )
+        return 2
 
     print("All resources passed the no-public-access check.")
     return 0

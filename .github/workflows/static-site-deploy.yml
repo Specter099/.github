@@ -11,6 +11,10 @@ on:
         description: Path to the CDK infra directory (contains app.py)
         type: string
         required: true
+      stacks:
+        description: Stack name(s) to deploy, or '--all' for all stacks
+        type: string
+        default: "--all"
       aws-region:
         description: AWS region
         type: string
@@ -26,18 +30,41 @@ on:
           hardcoded default in the setup-cdk action.
         type: string
         default: ""
+      node-version-file:
+        description: >-
+          Path to a Node version file (`.nvmrc`, `.node-version`) relative to
+          the repo root, e.g. `frontend/.nvmrc`. Set this so the version the
+          frontend is developed against is the one CI runs, instead of the two
+          drifting apart silently. Empty/unset keeps the setup-cdk default.
+        type: string
+        default: ""
       smoke-test-url:
         description: URL to curl after deploy for smoke test (optional)
         type: string
         default: ""
+      smoke-test-required:
+        description: >-
+          Fail the job when the smoke test returns a bad/unreachable status.
+          Set false for repos with known post-deploy propagation delay
+          (e.g. CloudFront) where a warn-only smoke test is preferred.
+        type: boolean
+        default: true
+      enable-docker-bundling:
+        description: >-
+          Set up QEMU (arm64) and Docker Buildx before synth/deploy. Needed
+          only when the CDK app bundles Lambda or container assets for
+          arm64 via Docker. Pure S3/CloudFront static sites should leave
+          this false (default) to skip ~30–60s of setup per deploy.
+        type: boolean
+        default: false
       enable-ci-logs:
         description: Ship detailed step logs to S3/CloudWatch
         type: boolean
-        default: true
+        default: false
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
-        default: "both"
+        default: "s3"
       ci-log-s3-bucket:
         description: >-
           S3 bucket for CI logs. Empty/unset falls back to
@@ -52,12 +79,18 @@ on:
           ci-log-destination includes 'cloudwatch'.
         type: string
         default: ""
+    secrets:
+      AWS_ROLE_ARN:
+        description: >-
+          IAM role ARN for OIDC federation. Optional as a secret: an
+          AWS_ROLE_ARN repository or environment variable works too.
+        required: false
 
 jobs:
   deploy:
     name: Build & Deploy
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     concurrency:
       group: static-site-deploy-${{ inputs.environment }}-${{ github.ref }}
       cancel-in-progress: false
@@ -65,8 +98,15 @@ jobs:
       id-token: write
       contents: read
     environment: ${{ inputs.environment }}
+    env:
+      # Secret first, variable second: the `||` order is the only thing that
+      # makes a secret win when both exist. `vars` resolves against the
+      # caller's repository (and its environment, since this job binds one).
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Init CI log directory
         if: ${{ inputs.enable-ci-logs }}
@@ -76,6 +116,7 @@ jobs:
         uses: Specter099/.github/.github/actions/setup-cdk@main
         with:
           cdk-version: ${{ inputs.cdk-version != '' && inputs.cdk-version || vars.CDK_CLI_VERSION }}
+          node-version-file: ${{ inputs.node-version-file }}
           requirements-path: ${{ inputs.infra-dir }}/requirements.txt
 
       - name: Install frontend dependencies
@@ -102,27 +143,68 @@ jobs:
             npm run build --prefix "$FRONTEND_DIR"
           fi
 
+      # The ARN can come from a secret or a variable (see AWS_ROLE_ARN in the
+      # job env), so neither is `required:`. Fail here with a clear message
+      # rather than inside configure-aws-credentials on an empty role.
+      - name: Verify a role ARN is available
+        if: env.AWS_ROLE_ARN == ''
+        run: |
+          echo "::error::No AWS_ROLE_ARN available. Set it as a secret or a variable on the calling repo (or its environment)." >&2
+          exit 1
+
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
           aws-region: ${{ inputs.aws-region }}
 
-      - name: CDK Deploy
+      - name: Set up QEMU
+        if: ${{ inputs.enable-docker-bundling }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        if: ${{ inputs.enable-docker-bundling }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: CDK Synth
         working-directory: ${{ inputs.infra-dir }}
         env:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           if [ "$ENABLE_LOGS" = "true" ]; then
-            cdk deploy --require-approval never --outputs-file outputs.json 2>&1 | tee "$RUNNER_TEMP/ci-logs/cdk-deploy.log"
+            cdk synth 2>&1 | tee "$RUNNER_TEMP/ci-logs/cdk-synth.log"
           else
-            cdk deploy --require-approval never --outputs-file outputs.json
+            cdk synth
+          fi
+
+      - name: CDK Deploy
+        working-directory: ${{ inputs.infra-dir }}
+        env:
+          CDK_STACKS: ${{ inputs.stacks }}
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+        run: |
+          set -o pipefail
+          # Guard caller-controlled input before unquoted expansion: only
+          # '--all' or space-separated stack names are accepted, so flags or
+          # shell metacharacters can't be smuggled into the cdk command.
+          if [[ ! "$CDK_STACKS" =~ ^(--all|[A-Za-z0-9_-]+( [A-Za-z0-9_-]+)*)$ ]]; then
+            echo "::error::invalid stacks input '$CDK_STACKS' — must be '--all' or space-separated stack names"
+            exit 1
+          fi
+          # --app cdk.out reuses the "CDK Synth" step above.
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            cdk deploy $CDK_STACKS --app cdk.out --require-approval never --outputs-file outputs.json 2>&1 | tee "$RUNNER_TEMP/ci-logs/cdk-deploy.log"
+          else
+            cdk deploy $CDK_STACKS --app cdk.out --require-approval never --outputs-file outputs.json
           fi
 
       - name: Upload stack outputs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: stack-outputs-${{ inputs.environment }}
           path: ${{ inputs.infra-dir }}/outputs.json
@@ -146,19 +228,29 @@ jobs:
         if: ${{ inputs.smoke-test-url != '' }}
         env:
           SMOKE_TEST_URL: ${{ inputs.smoke-test-url }}
+          SMOKE_TEST_REQUIRED: ${{ inputs.smoke-test-required }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           _run_smoke() {
+            # On a connection failure curl still prints 000 via -w and exits
+            # non-zero. `|| echo 000` would append a second 000 ("000000"),
+            # which is neither "000" nor >= 400, so the test passed on a dead
+            # endpoint. Keep curl's own output and ignore its exit code.
             status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 \
-              "$SMOKE_TEST_URL" || echo "000")
+              "$SMOKE_TEST_URL") || true
             echo "Smoke test HTTP status: $status"
             {
               echo "## Smoke Test"
               echo "Response from \`$SMOKE_TEST_URL\`: **HTTP $status**"
             } >> "$GITHUB_STEP_SUMMARY"
-            if [[ "$status" == "000" ]]; then
-              echo "::warning::Smoke test: curl failed or timed out"
+            if [[ "$status" == "000" || "$status" -ge "400" ]]; then
+              if [ "$SMOKE_TEST_REQUIRED" = "true" ]; then
+                echo "::error::Smoke test failed: HTTP $status from $SMOKE_TEST_URL"
+                return 1
+              else
+                echo "::warning::Smoke test failed (non-blocking, smoke-test-required is false): HTTP $status"
+              fi
             else
               echo "Smoke test passed — endpoint is reachable."
             fi
@@ -171,34 +263,9 @@ jobs:
 
       - name: Generate log metadata
         if: always() && inputs.enable-ci-logs
-        env:
-          META_REPOSITORY: ${{ github.repository }}
-          META_WORKFLOW: ${{ github.workflow }}
-          META_RUN_ID: ${{ github.run_id }}
-          META_RUN_ATTEMPT: ${{ github.run_attempt }}
-          META_REF: ${{ github.ref }}
-          META_SHA: ${{ github.sha }}
-          META_ACTOR: ${{ github.actor }}
-          META_EVENT: ${{ github.event_name }}
-          META_JOB_STATUS: ${{ job.status }}
-        run: |
-          python3 -c "
-          import json, os, datetime
-          meta = {
-              'repository': os.environ['META_REPOSITORY'],
-              'workflow': os.environ['META_WORKFLOW'],
-              'run_id': os.environ['META_RUN_ID'],
-              'run_attempt': os.environ['META_RUN_ATTEMPT'],
-              'ref': os.environ['META_REF'],
-              'sha': os.environ['META_SHA'],
-              'actor': os.environ['META_ACTOR'],
-              'event': os.environ['META_EVENT'],
-              'job_status': os.environ['META_JOB_STATUS'],
-              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
-          }
-          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
-              json.dump(meta, f, indent=2)
-          "
+        uses: Specter099/.github/.github/actions/log-metadata@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
 
       - name: Ship CI logs
         if: always() && inputs.enable-ci-logs

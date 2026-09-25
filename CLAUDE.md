@@ -8,8 +8,26 @@ Shared GitHub Actions reusable workflows and composite actions for the Specter09
 
 ## Common Commands
 
+# The pre-commit gate — run this before every commit. Mirrors self-test.yml,
+# so green here means green in CI. ~3s.
+./scripts/local-ci.sh
+
+# ...auto-formatting first, and showing the baselined work list
+./scripts/local-ci.sh --fix
+./scripts/local-ci.sh --strict
+
+# Install it as a git pre-commit hook (bypass with git commit --no-verify)
+./scripts/local-ci.sh --install-hook
+
+# CD-side checks against a caller repo: synth, then bucket names + access analyzer
+./scripts/local-ci.sh --cdk-project ../bitwarden-cdk
+
 # Lint all YAML files
 yamllint -c .yamllint.yml .github/
+
+# Org workflow conventions (also runnable against a caller repo)
+python scripts/check_workflow_invariants.py --list-checks
+python scripts/check_workflow_invariants.py --path ../bitwarden-cdk --strict
 
 # Validate bucket naming script locally
 python scripts/validate_bucket_names.py --path /path/to/cdk/project
@@ -24,7 +42,7 @@ pytest tests/ -v
 
 .github/
   workflows/
-    cdk-review.yml            # PR check: lint, test, synth, diff, SAST, CDK Nag, Access Analyzer
+    cdk-review.yml            # PR check: lint, test, SAST, synth, diff, CDK Nag, Access Analyzer
     cdk-deploy.yml            # Deploy CDK stacks to production
     static-site-review.yml    # PR check: frontend + CDK infra
     static-site-deploy.yml    # Build frontend + deploy CDK
@@ -34,30 +52,40 @@ pytest tests/ -v
     access-analyzer-check.yml # IAM Access Analyzer public access check
     validate-bucket-names.yml # S3 bucket naming convention enforcement
     gitleaks.yml              # Secret scan (reusable wrapper)
-    self-test.yml             # PR check for this repo itself (yamllint + pytest)
+    self-test.yml             # PR check for this repo (yamllint + pytest)
   actions/
     setup-cdk/action.yml      # Composite: Python 3.12 + Node 22 + CDK CLI
     access-analyzer/action.yml # Composite: scan CFN templates for public access
     ship-logs/action.yml      # Composite: upload step logs to S3/CloudWatch
+    log-metadata/action.yml   # Composite: write run metadata.json for ship-logs
+  dependabot.yml              # Weekly bumps for SHA-pinned actions
+  PULL_REQUEST_TEMPLATE.md    # Org-wide default PR template (applies to any repo without its own)
+  workflow-invariants-baseline.yml  # Accepted (pre-existing) invariant findings — a work list
 scripts/
+  local-ci.sh                 # The pre-commit gate. Same stages as self-test.yml
+  check_workflow_invariants.py # Org workflow conventions (WF001–WF016)
   check_no_public_access.py   # CLI for IAM Access Analyzer CheckNoPublicAccess API
   validate_bucket_names.py    # AST-based S3 bucket_name= convention checker
 tests/                        # pytest suite for the helper scripts
+docs/
+  reviews/                    # Point-in-time security/efficiency reviews
 
 ## Architecture
 
-All workflows use `workflow_call` triggers — caller repos reference them with `uses:` and pass inputs. AWS authentication is OIDC-based: callers must have an `AWS_ROLE_ARN` secret on their GitHub environment (default: `production`).
+All workflows use `workflow_call` triggers — caller repos reference them with `uses:` and pass inputs. AWS authentication is OIDC-based: callers provide `AWS_ROLE_ARN` as a secret or a variable on the repo or its GitHub environment (default: `production`). Workflows read `secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN`, so a secret wins, and fail with a clear error when neither is set (`cdk-review` only skips, and only when `require-aws: false`). Every assume-role sets `role-session-name: gha-<run_id>-<attempt>` for CloudTrail; review workflows also cap sessions at 900s.
 
 **Workflow dependency chain:**
 - `cdk-review` and `cdk-deploy` both use the `setup-cdk` composite action
 - `static-site-review` and `static-site-deploy` extend CDK workflows with frontend (npm) build/test steps
-- `cdk-review` includes SAST (bandit), CDK Nag, and IAM Access Analyzer in addition to synth/diff (no checkov — it was removed deliberately)
+- `cdk-review` includes SAST (bandit), CDK Nag (informational), and IAM Access Analyzer in addition to synth/diff
 - `python-ci` is standalone (no AWS credentials needed) — runs ruff, gitleaks, and pytest
 
 **Trigger convention in caller repos:**
 - All checks (review, security, tests, bucket-name validation) MUST trigger on `pull_request: [main]` only.
 - `push: [main]` is reserved for deploy workflows (and scheduled backups).
 - A caller workflow must never trigger on both `pull_request` and `push: [main]` — that double-runs the same checks at merge. Merge protection covers main-branch correctness; PR checks are the gate.
+- Add `paths-ignore: ['**/*.md', 'docs/**', 'LICENSE']` on every PR-triggered check so docs-only PRs skip CI. Reusable `workflow_call` targets cannot filter paths; this has to live on the caller.
+- Check workflows skip Dependabot PRs (`if: ${{ github.actor != 'dependabot[bot]' }}` on the job). The shared reusable workflows already do this; a skipped required check is treated as passing.
 
 **PR diff commenting:** `cdk-review` and `static-site-review` post CDK diff output as a PR comment, updating in place on re-runs.
 
@@ -67,13 +95,16 @@ All workflows use `workflow_call` triggers — caller repos reference them with 
 
 | Secret/Variable | Scope | Purpose |
 |---|---|---|
-| `AWS_ROLE_ARN` | Environment secret (`production`, `backup`) | IAM role ARN for OIDC federation (all AWS workflows) |
+| `AWS_ROLE_ARN` | Secret or variable (repo or environment) | IAM role ARN for OIDC federation (all AWS workflows) |
+| `GITLEAKS_LICENSE` | Secret (optional) | gitleaks-action licence for org repos past the free tier (`gitleaks`, `python-ci`) |
 | `BACKUP_S3_BUCKET` | Repository variable | S3 bucket for repo backups (`backup.yml`) |
-| `CI_LOGS_BUCKET` | Repository variable (caller repos) | Fallback S3 bucket for CI log shipping (`ship-logs`) |
-| `CI_LOGS_LOG_GROUP` | Repository variable (caller repos) | Fallback CloudWatch log group for CI log shipping |
-| `CDK_CLI_VERSION` | Repository variable (caller repos) | Fallback CDK CLI version for `setup-cdk` |
+| `CDK_CLI_VERSION` | Repository variable | CDK CLI version fallback when the `cdk-version` input is unset |
+| `CI_LOGS_BUCKET` | Repository variable | S3 bucket fallback for CI log shipping (`ship-logs`) |
+| `CI_LOGS_LOG_GROUP` | Repository variable | CloudWatch log group fallback for CI log shipping (`ship-logs`) |
 
 ## Code Style
 
 - YAML: `.yamllint.yml` config — line-length disabled, document-start disabled, truthy allows `on`
-- Python scripts: no formatter config in repo — follow existing style (type hints, argparse CLI, boto3)
+- Python: `ruff.toml` — `ruff format` defaults, and `select = ["E4", "E7", "E9", "F"]` (ruff's stable default set). Beyond that, follow existing style: type hints, argparse CLI, boto3.
+- `ruff` is pinned exactly in `requirements-dev.txt`. It changes its default rule set between minor releases, so an unpinned linter means local and CI enforce different rules — that exact drift turned a green local run red in CI. Bump the pin deliberately and review `ruff.toml` alongside it.
+- Broadening the ruff selection (`I`, `UP`, `RUF`, `SIM` are all reasonable) means fixing the findings that surface, so do it as its own change.

@@ -15,11 +15,23 @@ on:
         description: AWS region
         type: string
         default: "us-east-1"
+      environment:
+        description: GitHub environment to use (controls which secrets/vars are loaded)
+        type: string
+        default: "production"
       cdk-version:
         description: >-
           CDK CLI npm version. Empty/unset falls back to
           `vars.CDK_CLI_VERSION` in the calling repo, then to the
           hardcoded default in the setup-cdk action.
+        type: string
+        default: ""
+      node-version-file:
+        description: >-
+          Path to a Node version file (`.nvmrc`, `.node-version`) relative to
+          the repo root, e.g. `frontend/.nvmrc`. Set this so the version the
+          frontend is developed against is the one CI runs, instead of the two
+          drifting apart silently. Empty/unset keeps the setup-cdk default.
         type: string
         default: ""
       smoke-test-url:
@@ -33,11 +45,11 @@ on:
       enable-ci-logs:
         description: Ship detailed step logs to S3/CloudWatch
         type: boolean
-        default: true
+        default: false
       ci-log-destination:
         description: "Log destination: s3, cloudwatch, or both"
         type: string
-        default: "both"
+        default: "s3"
       ci-log-s3-bucket:
         description: >-
           S3 bucket for CI logs. Empty/unset falls back to
@@ -52,18 +64,47 @@ on:
           ci-log-destination includes 'cloudwatch'.
         type: string
         default: ""
+    secrets:
+      AWS_ROLE_ARN:
+        description: >-
+          IAM role ARN for OIDC federation. Optional as a secret: an
+          AWS_ROLE_ARN repository or environment variable works too.
+        required: false
 
 jobs:
   review:
     name: Lint, Test & Diff
+    # Skip Dependabot PRs (typically SHA-pin / lockfile bumps). A skipped
+    # required check is treated as passing by branch protection.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    concurrency:
+      group: static-site-review-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       id-token: write
       contents: read
       pull-requests: write
+    environment: ${{ inputs.environment }}
+    env:
+      # Secret first, variable second: the `||` order is the only thing that
+      # makes a secret win when both exist. `vars` resolves against the
+      # caller's repository (and its environment, since this job binds one).
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      # This job runs PR-authored code with AWS credentials and a write-scoped
+      # token. Under pull_request_target that code could come from a fork, so
+      # refuse outright rather than trusting every caller to get it right.
+      - name: Refuse pull_request_target
+        if: github.event_name == 'pull_request_target'
+        run: |
+          echo "::error::This workflow must not be called from a pull_request_target trigger. Use pull_request." >&2
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Init CI log directory
         if: ${{ inputs.enable-ci-logs }}
@@ -73,6 +114,7 @@ jobs:
         uses: Specter099/.github/.github/actions/setup-cdk@main
         with:
           cdk-version: ${{ inputs.cdk-version != '' && inputs.cdk-version || vars.CDK_CLI_VERSION }}
+          node-version-file: ${{ inputs.node-version-file }}
           requirements-path: ${{ inputs.infra-dir }}/requirements.txt
 
       - name: Install frontend dependencies
@@ -140,16 +182,30 @@ jobs:
           INFRA_DIR: ${{ inputs.infra-dir }}
         run: |
           set -o pipefail
+          pip install pip-audit==2.10.1
           if [ "$ENABLE_LOGS" = "true" ]; then
             pip-audit -r "$INFRA_DIR/requirements.txt" 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
           else
             pip-audit -r "$INFRA_DIR/requirements.txt"
           fi
 
+      # The ARN can come from a secret or a variable (see AWS_ROLE_ARN in the
+      # job env), so neither is `required:`. Fail here with a clear message
+      # rather than inside configure-aws-credentials on an empty role.
+      - name: Verify a role ARN is available
+        if: env.AWS_ROLE_ARN == ''
+        run: |
+          echo "::error::No AWS_ROLE_ARN available. Set it as a secret or a variable on the calling repo (or its environment)." >&2
+          exit 1
+
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          # Shortest STS allows. This job runs PR-authored code, so a leaked
+          # credential should expire quickly.
+          role-duration-seconds: 900
           aws-region: ${{ inputs.aws-region }}
 
       - name: CDK Synth
@@ -170,29 +226,46 @@ jobs:
         env:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
-          diff_output=$(cdk diff 2>&1) || true
+          # Reuses the cdk.out from the "CDK Synth" step above instead of
+          # letting `cdk diff` re-synthesize.
+          diff_output=$(cdk diff --app cdk.out 2>&1) || true
           echo "$diff_output"
+          # Random delimiter: diff text is PR-derived, and a line reading
+          # exactly a fixed delimiter would end the block early and let the
+          # rest forge further step outputs.
+          delim="EOF_$(openssl rand -hex 16)"
           {
-            echo "diff<<EOF"
+            echo "diff<<$delim"
             echo "$diff_output"
-            echo "EOF"
+            echo "$delim"
           } >> "$GITHUB_OUTPUT"
           if [ "$ENABLE_LOGS" = "true" ]; then
             echo "$diff_output" > "$RUNNER_TEMP/ci-logs/cdk-diff.log"
           fi
 
       - name: Comment diff on PR
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.1.0
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         env:
           DIFF: ${{ steps.diff.outputs.diff }}
         with:
           script: |
-            const diff = process.env.DIFF;
+            // GitHub comment bodies are capped at 65536 chars — truncate
+            // large diffs instead of failing the comment API call.
+            const MAX_DIFF = 60000;
+            let diff = process.env.DIFF || '';
+            if (diff.length > MAX_DIFF) {
+              diff = diff.slice(0, MAX_DIFF)
+                + '\n… diff truncated — see the workflow run logs for the full output.';
+            }
             const body = `### CDK Diff\n\n\`\`\`\n${diff}\n\`\`\``;
-            const { data: comments } = await github.rest.issues.listComments({
+            // Paginate: listComments returns 30 per page, so on a busy PR
+            // the existing diff comment would be missed and duplicated.
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
+              per_page: 100,
             });
             const existing = comments.find(c =>
               c.user.type === 'Bot' && c.body.startsWith('### CDK Diff')
@@ -215,34 +288,9 @@ jobs:
 
       - name: Generate log metadata
         if: always() && inputs.enable-ci-logs
-        env:
-          META_REPOSITORY: ${{ github.repository }}
-          META_WORKFLOW: ${{ github.workflow }}
-          META_RUN_ID: ${{ github.run_id }}
-          META_RUN_ATTEMPT: ${{ github.run_attempt }}
-          META_REF: ${{ github.ref }}
-          META_SHA: ${{ github.sha }}
-          META_ACTOR: ${{ github.actor }}
-          META_EVENT: ${{ github.event_name }}
-          META_JOB_STATUS: ${{ job.status }}
-        run: |
-          python3 -c "
-          import json, os, datetime
-          meta = {
-              'repository': os.environ['META_REPOSITORY'],
-              'workflow': os.environ['META_WORKFLOW'],
-              'run_id': os.environ['META_RUN_ID'],
-              'run_attempt': os.environ['META_RUN_ATTEMPT'],
-              'ref': os.environ['META_REF'],
-              'sha': os.environ['META_SHA'],
-              'actor': os.environ['META_ACTOR'],
-              'event': os.environ['META_EVENT'],
-              'job_status': os.environ['META_JOB_STATUS'],
-              'timestamp': datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
-          }
-          with open(os.path.join(os.environ['RUNNER_TEMP'], 'ci-logs', 'metadata.json'), 'w') as f:
-              json.dump(meta, f, indent=2)
-          "
+        uses: Specter099/.github/.github/actions/log-metadata@main
+        with:
+          log-dir: ${{ runner.temp }}/ci-logs
 
       - name: Ship CI logs
         if: always() && inputs.enable-ci-logs

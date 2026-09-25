@@ -1,6 +1,6 @@
 # Workflow Review — Remaining Work
 
-Tracks follow-up work from the April 2026 GitHub Actions review (updated June 2026). Everything below is scoped as a separate PR unless noted.
+Open follow-up work. Completed items are removed rather than ticked off. The current prioritized findings are in [`docs/reviews/2026-09-25-security-ops-simplicity-review.md`](docs/reviews/2026-09-25-security-ops-simplicity-review.md). Everything below is scoped as a separate PR unless noted.
 
 Mental model: **all checks in CI (review workflows), CD only deploys.** Do not add check steps to `cdk-deploy.yml` or `static-site-deploy.yml`.
 
@@ -11,31 +11,39 @@ Trigger convention in caller repos:
 
 ---
 
-## Done / In flight
+## P0 — Security & Correctness
 
-- ✅ Fix caller-repo `security.yml` triggers (static-site-infra, bitwarden-cdk, route53-cdk) — all three now trigger on `pull_request` only.
-- ✅ Pin all third-party actions to full SHA + add Dependabot — [#73](https://github.com/Specter099/.github/pull/73). Internal composite refs (`setup-cdk`, `access-analyzer`, `ship-logs`) stay on `@main` deliberately: this is a single-user account with merge protection, and pinning self-references would require a two-phase bump on every action change. Revisit if reproducible caller runs become a requirement (tagged releases).
-- ✅ Add `timeout-minutes` to every job — [#73](https://github.com/Specter099/.github/pull/73).
-- 🔄 Fix CDK Nag silent failure — [#84](https://github.com/Specter099/.github/pull/84).
-- 🔄 Validate `CDK_STACKS` input in `cdk-deploy.yml` — [#84](https://github.com/Specter099/.github/pull/84).
-- 🔄 Drop `eval` of `install-command` in `python-ci.yml` — [#84](https://github.com/Specter099/.github/pull/84).
-- 🔄 Script robustness (f-string validation, stringified policies, exit code 2 for incomplete scans) — [#85](https://github.com/Specter099/.github/pull/85).
-- 🔄 Consolidate `backup.yml` → `repo-backup.yml` — [#86](https://github.com/Specter099/.github/pull/86).
-- 🔄 Remove dead CloudWatch `sequence_token` plumbing — [#86](https://github.com/Specter099/.github/pull/86).
-- 🔄 Remove redundant `pip install` in `cdk-review.yml` — [#86](https://github.com/Specter099/.github/pull/86).
-- 🔄 Pin internal scripts checkout in `validate-bucket-names.yml` (`job.workflow_sha`) — [#86](https://github.com/Specter099/.github/pull/86).
-- 🔄 Document `smoke-test-url` as unused in `cdk-review.yml` (kept — a caller passes it) — [#86](https://github.com/Specter099/.github/pull/86).
-- 🔄 Self-test now runs ruff, bandit, and actionlint — [#86](https://github.com/Specter099/.github/pull/86).
-- 🔄 Reconcile `CLAUDE.md` with actual workflow (checkov claim removed) — this PR.
+### Fix caller-repo `security.yml` triggers
+**Files (external repos):**
+- `Specter099/static-site-infra/.github/workflows/security.yml`
+- `Specter099/bitwarden-cdk/.github/workflows/security.yml`
+- `Specter099/route53-cdk/.github/workflows/security.yml`
+
+All three trigger on both `push: [main]` **and** `pull_request: [main]`. Per the trigger convention, security scans belong to PR flow only. Remove the `push:` block from each.
+
+### Separate review role and environment (needs AWS + GitHub settings)
+**Files:** `cdk-review.yml`, `static-site-review.yml`; IAM; each caller's environments
+- Review jobs run PR-authored code and currently bind the `production` environment, so they can assume the deploy role (review S1).
+- Workflow side already done: 900s session cap and `role-session-name`. Still needed: a read-only review role trusted on `repo:Specter099/<repo>:pull_request`, a `review` environment holding it, then flip the review workflows' `environment` default to `review`; restrict `production` to `main` and trust the deploy role only on `...:environment:production`.
+- Order matters: flipping the default before callers have a `review` environment would break every review run.
+
+### Pin internal actions/workflows (`@main`)
+**Files:** every workflow that uses `Specter099/.github/.github/actions/*@main`
+- Third-party actions are SHA-pinned and Dependabot bumps them; the internal `@main` refs are what's left (WF004 baseline).
+- Tag this repo, pin internal `uses:` to the tag SHA, and let Dependabot bump it.
+
+---
+
+## P1 — Reliability & Hygiene
+
+### Pin internal-action ref in `validate-bucket-names.yml`
+**File:** [`validate-bucket-names.yml:36-38`](.github/workflows/validate-bucket-names.yml)
+- Second `actions/checkout` pulls `Specter099/.github` at implicit `main`. Script changes silently alter caller behavior.
+- After SHA-pinning work above, set `ref: <tag-or-sha>` here too.
 
 ---
 
 ## P2 — Code Smell / Consistency
-
-### Reorder `cdk-review.yml` for faster failure
-**File:** [`cdk-review.yml`](.github/workflows/cdk-review.yml)
-- SAST (bandit) currently runs *after* `cdk synth` / Access Analyzer, both of which need AWS creds.
-- Reorder: checkout → setup → lint → bandit → tests → pip-audit → *(AWS creds)* → synth → access-analyzer → nag → diff.
 
 ### Extract `ENABLE_LOGS` boilerplate to composite action
 **Files:** every review/deploy workflow
@@ -47,24 +55,10 @@ Trigger convention in caller repos:
 - `find "$YAML_DIR" -maxdepth 1 …` misses nested CloudFormation YAML directories.
 - Remove `-maxdepth 1` or parameterize.
 
-### Fix npm cache key in `setup-cdk`
-**File:** [`actions/setup-cdk/action.yml:26-30`](.github/actions/setup-cdk/action.yml)
-- `actions/cache` key includes `runner.os` and `cdk-version` but no `hashFiles('**/package-lock.json')` — cache never invalidates when the caller's JS deps change.
-- Either drop the npm cache step entirely (only CDK CLI is installed globally, which is version-keyed) or add a proper hashed key + `restore-keys`.
-
-### Enable `ruff format --check` in self-test
-**File:** [`self-test.yml`](.github/workflows/self-test.yml)
-- Deferred from [#86](https://github.com/Specter099/.github/pull/86) because [#85](https://github.com/Specter099/.github/pull/85) reformats the test files. Once #85 lands, add `ruff format --check scripts/ tests/`.
-
-### Normalize YAML file headers
-**Files:** all workflows
-- `cdk-review.yml` and `python-ci.yml` start with `---` + `"on":`. Others don't.
-- `.yamllint.yml` already tolerates both. Pick one and apply across the board for consistency.
-
-### Close `gitleaks-action` license gap (contingent)
-**File:** [`gitleaks.yml`](.github/workflows/gitleaks.yml), [`python-ci.yml`](.github/workflows/python-ci.yml)
-- `gitleaks/gitleaks-action@v2` requires a paid license for private-org scans above a free-tier threshold.
-- If that threshold is ever hit, swap to `docker://zricethezav/gitleaks:latest detect --source=. --redact`.
+### Move `backup.yml` off the `production` environment
+**File:** [`backup.yml`](.github/workflows/backup.yml)
+- Already calls `repo-backup.yml`, but still passes `environment: production`, so the backup runs under the prod environment and role.
+- Switch it to `environment: backup` (the callee's default) once that environment has its own role.
 
 ---
 
@@ -85,7 +79,7 @@ Trigger convention in caller repos:
 
 ---
 
-## Hygiene (from June 2026 review)
+## Hygiene
 
 ### Add SECURITY.md and CODEOWNERS
 - This is the account's special `.github` repo — also the natural home for a `profile/README.md` if one is ever wanted.

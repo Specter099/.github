@@ -8,7 +8,9 @@ on:
         type: string
         default: us-east-1
       template-dir:
-        description: Directory containing CloudFormation *.template.json files (e.g. cdk.out)
+        description: >-
+          Directory containing CDK-synthesized CloudFormation *.template.json files.
+          Leave empty to skip (e.g. repos with no CDK app — use yaml-template-dir instead).
         type: string
         default: cdk.out
       yaml-template-dir:
@@ -28,6 +30,12 @@ on:
           secret set to the IAM role ARN to assume via OIDC.
         type: string
         default: production
+    secrets:
+      AWS_ROLE_ARN:
+        description: >-
+          IAM role ARN for OIDC federation. Optional as a secret: an
+          AWS_ROLE_ARN repository or environment variable works too.
+        required: false
 
 permissions:
   id-token: write  # OIDC token for AWS authentication
@@ -36,23 +44,48 @@ permissions:
 jobs:
   check-no-public-access:
     name: Check No Public Access
+    # Skip Dependabot PRs — they don't change CloudFormation templates.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
+    concurrency:
+      group: access-analyzer-check-${{ github.ref }}
+      cancel-in-progress: true
     environment: ${{ inputs.environment }}
+    env:
+      # Secret first, variable second: the `||` order is the only thing that
+      # makes a secret win when both exist. `vars` resolves against the
+      # caller's repository (and its environment, since this job binds one).
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The ARN can come from a secret or a variable (see AWS_ROLE_ARN in the
+      # job env), so neither is `required:`. Fail here with a clear message
+      # rather than inside configure-aws-credentials on an empty role.
+      - name: Verify a role ARN is available
+        if: env.AWS_ROLE_ARN == ''
+        run: |
+          echo "::error::No AWS_ROLE_ARN available. Set it as a secret or a variable on the calling repo (or its environment)." >&2
+          exit 1
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
+          # No pip cache: setup-python fails the job when the caller has no
+          # requirements.txt/pyproject.toml (e.g. CloudFormation YAML-only
+          # repos), and the action installs its own pinned deps anyway.
           python-version: "3.12"
 
       - name: Check no public access

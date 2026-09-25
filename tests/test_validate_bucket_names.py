@@ -24,9 +24,7 @@ class TestIsValidBucketName:
         assert not vbn.is_valid_bucket_name("bitwarden-12345-us-east-1-an")
 
     def test_underscore_in_prefix(self):
-        assert not vbn.is_valid_bucket_name(
-            "bitwarden_logs-123456789012-us-east-1-an"
-        )
+        assert not vbn.is_valid_bucket_name("bitwarden_logs-123456789012-us-east-1-an")
 
     def test_uppercase_rejected(self):
         assert not vbn.is_valid_bucket_name("Bitwarden-123456789012-us-east-1-an")
@@ -53,17 +51,51 @@ class TestExtractBucketNames:
             )
         )
         found = vbn.extract_bucket_names_from_file(src)
-        assert [name for _, name in found] == ["logs-123456789012-us-east-1-an"]
+        assert [(name, valid) for _, name, valid in found] == [
+            ("logs-123456789012-us-east-1-an", True)
+        ]
+
+    def test_invalid_literal_marked(self, tmp_path):
+        src = tmp_path / "stack.py"
+        # Built indirectly so this test file itself never contains a
+        # non-conforming bucket_name= literal.
+        src.write_text('s3.Bucket(self, "B", bucket_name=%s)\n' % '"my-bucket"')
+        found = vbn.extract_bucket_names_from_file(src)
+        assert [(name, valid) for _, name, valid in found] == [("my-bucket", False)]
 
     def test_ignores_other_kwargs(self, tmp_path):
         src = tmp_path / "stack.py"
         src.write_text('s3.Bucket(self, "B", versioned=True)\n')
         assert vbn.extract_bucket_names_from_file(src) == []
 
-    def test_syntax_error_returns_empty(self, tmp_path):
+    def test_syntax_error_raises(self, tmp_path):
+        import pytest
+
         src = tmp_path / "broken.py"
         src.write_text("def (:\n")  # invalid syntax
-        assert vbn.extract_bucket_names_from_file(src) == []
+        with pytest.raises(SyntaxError):
+            vbn.extract_bucket_names_from_file(src)
+
+    def test_conforming_fstring_passes(self, tmp_path):
+        src = tmp_path / "stack.py"
+        src.write_text('B(bucket_name=f"logs-{account_id}-{region}-an")\n')
+        found = vbn.extract_bucket_names_from_file(src)
+        assert len(found) == 1
+        _, display, valid = found[0]
+        assert valid
+        assert display == "logs-{account_id}-{region}-an"
+
+    def test_fstring_missing_suffix_flagged(self, tmp_path):
+        src = tmp_path / "stack.py"
+        src.write_text('B(bucket_name=f"logs-{account_id}-{region}")\n')
+        found = vbn.extract_bucket_names_from_file(src)
+        assert [valid for _, _, valid in found] == [False]
+
+    def test_fstring_bad_literal_chars_flagged(self, tmp_path):
+        src = tmp_path / "stack.py"
+        src.write_text('B(bucket_name=f"My_Logs-{account_id}-{region}-an")\n')
+        found = vbn.extract_bucket_names_from_file(src)
+        assert [valid for _, _, valid in found] == [False]
 
 
 # ---------------------------------------------------------------------------
@@ -75,18 +107,27 @@ class TestScanDirectory:
             'B(bucket_name="logs-123456789012-us-east-1-an")\n'
         )
         (tmp_path / "bad.py").write_text('B(bucket_name="my-bucket")\n')
-        violations, checked = vbn.scan_directory(tmp_path)
+        violations, checked, parse_errors = vbn.scan_directory(tmp_path)
         assert checked == 2
         assert len(violations) == 1
         assert violations[0][2] == "my-bucket"
+        assert parse_errors == 0
 
     def test_excludes_vendored_dirs(self, tmp_path):
         venv = tmp_path / ".venv"
         venv.mkdir()
         (venv / "dep.py").write_text('B(bucket_name="my-bucket")\n')
-        violations, checked = vbn.scan_directory(tmp_path)
+        violations, checked, parse_errors = vbn.scan_directory(tmp_path)
         assert checked == 0
         assert violations == []
+        assert parse_errors == 0
+
+    def test_unparseable_file_counted(self, tmp_path):
+        (tmp_path / "broken.py").write_text("def (:\n")
+        violations, checked, parse_errors = vbn.scan_directory(tmp_path)
+        assert violations == []
+        assert checked == 0
+        assert parse_errors == 1
 
 
 # ---------------------------------------------------------------------------
@@ -97,13 +138,17 @@ class TestScanTemplates:
         props = {} if bucket_name is None else {"BucketName": bucket_name}
         path.write_text(
             json.dumps(
-                {"Resources": {"Bucket": {"Type": "AWS::S3::Bucket", "Properties": props}}}
+                {
+                    "Resources": {
+                        "Bucket": {"Type": "AWS::S3::Bucket", "Properties": props}
+                    }
+                }
             )
         )
 
     def test_flags_invalid_template_name(self, tmp_path):
         self._write_template(tmp_path / "Stack.template.json", "my-bucket")
-        violations, checked = vbn.scan_templates(tmp_path)
+        violations, checked, parse_errors = vbn.scan_templates(tmp_path)
         assert checked == 1
         assert len(violations) == 1
 
@@ -111,14 +156,14 @@ class TestScanTemplates:
         self._write_template(
             tmp_path / "Stack.template.json", "logs-123456789012-us-east-1-an"
         )
-        violations, checked = vbn.scan_templates(tmp_path)
+        violations, checked, parse_errors = vbn.scan_templates(tmp_path)
         assert checked == 1
         assert violations == []
 
     def test_autogenerated_name_skipped(self, tmp_path):
         # No BucketName property -> auto-named, not checked.
         self._write_template(tmp_path / "Stack.template.json", None)
-        violations, checked = vbn.scan_templates(tmp_path)
+        violations, checked, parse_errors = vbn.scan_templates(tmp_path)
         assert checked == 0
 
     def test_intrinsic_bucketname_skipped(self, tmp_path):
@@ -135,14 +180,21 @@ class TestScanTemplates:
                 }
             )
         )
-        violations, checked = vbn.scan_templates(tmp_path)
+        violations, checked, parse_errors = vbn.scan_templates(tmp_path)
         assert checked == 0
 
     def test_manifest_and_asset_skipped(self, tmp_path):
         self._write_template(tmp_path / "manifest.json", "my-bucket")
         self._write_template(tmp_path / "asset.abc.template.json", "my-bucket")
-        violations, checked = vbn.scan_templates(tmp_path)
+        violations, checked, parse_errors = vbn.scan_templates(tmp_path)
         assert checked == 0
+
+    def test_malformed_template_counted(self, tmp_path):
+        (tmp_path / "Stack.template.json").write_text("{not json")
+        violations, checked, parse_errors = vbn.scan_templates(tmp_path)
+        assert violations == []
+        assert checked == 0
+        assert parse_errors == 1
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +219,14 @@ class TestMain:
         monkeypatch.setattr("sys.argv", ["prog"])
         with pytest.raises(SystemExit):
             vbn.main()
+
+    def test_exit_two_on_unparseable_file(self, tmp_path, monkeypatch):
+        (tmp_path / "broken.py").write_text("def (:\n")
+        monkeypatch.setattr("sys.argv", ["prog", "--path", str(tmp_path)])
+        assert vbn.main() == 2
+
+    def test_violation_takes_precedence_over_parse_error(self, tmp_path, monkeypatch):
+        (tmp_path / "broken.py").write_text("def (:\n")
+        (tmp_path / "bad.py").write_text("B(bucket_name=%s)\n" % '"my-bucket"')
+        monkeypatch.setattr("sys.argv", ["prog", "--path", str(tmp_path)])
+        assert vbn.main() == 1
