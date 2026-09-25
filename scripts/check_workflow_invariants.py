@@ -696,7 +696,7 @@ def collect(root: Path) -> tuple[list[Finding], list[str]]:
     return findings, errors
 
 
-def load_baseline(path: Path) -> tuple[dict[str, int], dict]:
+def load_baseline(path: Path) -> dict[str, int]:
     """Return {fingerprint: accepted_count}.
 
     Counts, not a bare set: two genuinely distinct violations in the same file
@@ -707,7 +707,7 @@ def load_baseline(path: Path) -> tuple[dict[str, int], dict]:
     blocks.
     """
     if not path.is_file():
-        return {}, {}
+        return {}
     try:
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if not isinstance(doc, dict):
@@ -721,7 +721,7 @@ def load_baseline(path: Path) -> tuple[dict[str, int], dict]:
             if n < 1:
                 raise ValueError(f"count must be >= 1, got {n!r} for {fp}")
             counts[fp] = counts.get(fp, 0) + n
-        return counts, doc
+        return counts
     except (yaml.YAMLError, ValueError, TypeError, AttributeError) as exc:
         # Fail closed and legibly. Silently ignoring a broken baseline would
         # accept nothing and bury the reason in a wall of findings; a traceback
@@ -778,7 +778,7 @@ def main() -> int:
         else root / ".github" / "workflow-invariants-baseline.yml"
     )
     try:
-        accepted, _ = ({}, {}) if args.strict else load_baseline(baseline_path)
+        accepted = {} if args.strict else load_baseline(baseline_path)
     except BaselineError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

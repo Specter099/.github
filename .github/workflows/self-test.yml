@@ -41,6 +41,18 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
 
+      # local-ci.sh `go install`s actionlint when it isn't on PATH. Cache the
+      # binary so that is a one-off rather than a compile on every run. The
+      # pinned version lives in local-ci.sh, so key on that file.
+      - name: Cache actionlint
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/go/bin/actionlint
+          key: actionlint-${{ runner.os }}-${{ hashFiles('scripts/local-ci.sh') }}
+
+      - name: Put Go binaries on PATH
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
       # Single entrypoint shared with local development, so that a green
       # `./scripts/local-ci.sh` on a laptop means a green check here. Stages:
       # yamllint, ruff, pytest, workflow invariants, actionlint; zizmor runs

@@ -17,13 +17,6 @@
 # above a finding don't silently un-baseline it)
 
 accepted:
-  # --- WF012: README documents an input that does not exist -----------------
-  # Review finding "Documentation drift" #1. python-ci's input is
-  # `python-versions` and takes a JSON array; GitHub rejects unknown inputs,
-  # so this example fails outright for anyone who copies it.
-  - fingerprint: "WF012:README.md:python-ci.yml example passes 'python-version', which is not a declared input"
-    review: docs-1
-
   # --- WF004: internal actions referenced at mutable @main ------------------
   # Review finding S6 / TODO.md P0. A push to this repo's default branch
   # propagates instantly to every caller, including deploys holding prod
@@ -62,15 +55,6 @@ accepted:
     review: S6
   - fingerprint: "WF004:.github/workflows/validate-bucket-names.yml:checkout of Specter099/.github with no ref (implicit default branch)"
     review: S6
-
-  # --- WF007: fixed GITHUB_OUTPUT heredoc delimiter on cdk diff output ------
-  # Review finding S5. cdk diff text is PR-derived; a line reading exactly
-  # `EOF` terminates the block early and can forge later step outputs.
-  - fingerprint: "WF007:.github/workflows/cdk-review.yml:output 'diff' uses fixed heredoc delimiter 'EOF'"
-    review: S5
-  - fingerprint: "WF007:.github/workflows/static-site-review.yml:output 'diff' uses fixed heredoc delimiter 'EOF'"
-    review: S5
-
 
   # --- WF011: vestigial input ----------------------------------------------
   # Kept deliberately for caller interface parity with the deploy workflows;

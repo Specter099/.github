@@ -134,6 +134,7 @@ jobs:
           # workflow's repository are used."
           # https://docs.github.com/en/actions/reference/workflows-and-actions/variables
           role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Upload to S3

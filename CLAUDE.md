@@ -39,7 +39,7 @@ python scripts/check_no_public_access.py --template-dir /path/to/cdk.out
 
 .github/
   workflows/
-    cdk-review.yml            # PR check: lint, test, synth, diff, SAST, IaC scan
+    cdk-review.yml            # PR check: lint, test, SAST, synth, diff, CDK Nag, Access Analyzer
     cdk-deploy.yml            # Deploy CDK stacks to production
     static-site-review.yml    # PR check: frontend + CDK infra
     static-site-deploy.yml    # Build frontend + deploy CDK
@@ -54,6 +54,7 @@ python scripts/check_no_public_access.py --template-dir /path/to/cdk.out
     setup-cdk/action.yml      # Composite: Python 3.12 + Node 22 + CDK CLI
     access-analyzer/action.yml # Composite: scan CFN templates for public access
     ship-logs/action.yml      # Composite: upload step logs to S3/CloudWatch
+    log-metadata/action.yml   # Composite: write run metadata.json for ship-logs
   dependabot.yml              # Weekly bumps for SHA-pinned actions
   PULL_REQUEST_TEMPLATE.md    # Org-wide default PR template (applies to any repo without its own)
   workflow-invariants-baseline.yml  # Accepted (pre-existing) invariant findings — a work list
@@ -67,12 +68,12 @@ docs/
 
 ## Architecture
 
-All workflows use `workflow_call` triggers — caller repos reference them with `uses:` and pass inputs. AWS authentication is OIDC-based: callers must have an `AWS_ROLE_ARN` secret on their GitHub environment (default: `production`).
+All workflows use `workflow_call` triggers — caller repos reference them with `uses:` and pass inputs. AWS authentication is OIDC-based: callers provide `AWS_ROLE_ARN` as a secret or a variable on the repo or its GitHub environment (default: `production`). Workflows read `secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN`, so a secret wins, and fail with a clear error when neither is set (`cdk-review` only skips, and only when `require-aws: false`). Every assume-role sets `role-session-name: gha-<run_id>-<attempt>` for CloudTrail; review workflows also cap sessions at 900s.
 
 **Workflow dependency chain:**
 - `cdk-review` and `cdk-deploy` both use the `setup-cdk` composite action
 - `static-site-review` and `static-site-deploy` extend CDK workflows with frontend (npm) build/test steps
-- `cdk-review` includes SAST (bandit), IaC scanning (checkov), and CDK Nag in addition to synth/diff
+- `cdk-review` includes SAST (bandit), CDK Nag (informational), and IAM Access Analyzer in addition to synth/diff
 - `python-ci` is standalone (no AWS credentials needed) — runs ruff, gitleaks, and pytest
 
 **Trigger convention in caller repos:**
@@ -90,8 +91,9 @@ All workflows use `workflow_call` triggers — caller repos reference them with 
 
 | Secret/Variable | Scope | Purpose |
 |---|---|---|
-| `AWS_ROLE_ARN` | Environment secret | IAM role ARN for OIDC federation (all AWS workflows) |
-| `BACKUP_S3_BUCKET` | Environment variable | S3 bucket for repo backups (`backup.yml`) |
+| `AWS_ROLE_ARN` | Secret or variable (repo or environment) | IAM role ARN for OIDC federation (all AWS workflows) |
+| `GITLEAKS_LICENSE` | Secret (optional) | gitleaks-action licence for org repos past the free tier (`gitleaks`, `python-ci`) |
+| `BACKUP_S3_BUCKET` | Repository variable | S3 bucket for repo backups (`backup.yml`) |
 | `CDK_CLI_VERSION` | Repository variable | CDK CLI version fallback when the `cdk-version` input is unset |
 | `CI_LOGS_BUCKET` | Repository variable | S3 bucket fallback for CI log shipping (`ship-logs`) |
 | `CI_LOGS_LOG_GROUP` | Repository variable | CloudWatch log group fallback for CI log shipping (`ship-logs`) |

@@ -121,7 +121,7 @@ def test_baseline_has_no_stale_entries():
     silently re-accept the problem if it came back. Without the second, an
     inflated `count` is a blank cheque for future duplicates.
     """
-    accepted, _ = ci.load_baseline(
+    accepted = ci.load_baseline(
         REPO_ROOT / ".github" / "workflow-invariants-baseline.yml"
     )
     live: dict[str, int] = {}

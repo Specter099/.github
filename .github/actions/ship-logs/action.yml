@@ -30,6 +30,12 @@ inputs:
       warns and skips if empty.
     required: false
     default: ""
+  key-suffix:
+    description: >-
+      Appended to the S3 key and CloudWatch stream, e.g. the matrix value, so
+      jobs that share a run ID don't overwrite each other's logs.
+    required: false
+    default: ""
   aws-region:
     description: AWS region
     required: false
@@ -47,11 +53,16 @@ runs:
         RUN_ID: ${{ github.run_id }}
         ATTEMPT: ${{ github.run_attempt }}
         S3_PREFIX: ${{ inputs.s3-prefix }}
+        KEY_SUFFIX: ${{ inputs.key-suffix }}
       run: |
         # Sanitise workflow name: keep only alphanumeric and hyphens
         SAFE_WORKFLOW=$(echo "$WORKFLOW" | tr -cs 'a-zA-Z0-9-' '-' | tr '[:upper:]' '[:lower:]' | sed 's/^-//;s/-$//')
-        S3_KEY="${S3_PREFIX}/${REPO}/${SAFE_WORKFLOW}/${RUN_ID}-${ATTEMPT}"
-        CW_STREAM="${REPO}/${SAFE_WORKFLOW}/${RUN_ID}-${ATTEMPT}"
+        RUN="${RUN_ID}-${ATTEMPT}"
+        if [ -n "$KEY_SUFFIX" ]; then
+          RUN="${RUN}-$(echo "$KEY_SUFFIX" | tr -cs 'a-zA-Z0-9.-' '-' | sed 's/-$//')"
+        fi
+        S3_KEY="${S3_PREFIX}/${REPO}/${SAFE_WORKFLOW}/${RUN}"
+        CW_STREAM="${REPO}/${SAFE_WORKFLOW}/${RUN}"
         echo "s3-key=${S3_KEY}" >> "$GITHUB_OUTPUT"
         echo "cw-stream=${CW_STREAM}" >> "$GITHUB_OUTPUT"
 
@@ -93,26 +104,30 @@ runs:
           echo "::warning::ship-logs: cloudwatch-log-group input is empty — skipping CloudWatch log shipping. Set vars.CI_LOGS_LOG_GROUP in the calling repo or pass ci-log-cloudwatch-group explicitly to enable it."
           exit 0
         fi
-        # Create log group (ignore if exists) with 90-day retention
-        aws logs create-log-group \
-          --log-group-name "$LOG_GROUP" \
-          --region "$AWS_REGION" 2>/dev/null || true
-        aws logs put-retention-policy \
-          --log-group-name "$LOG_GROUP" \
-          --retention-in-days 90 \
-          --region "$AWS_REGION" 2>/dev/null || true
-        # Create log stream (ignore if exists on retry)
-        aws logs create-log-stream \
-          --log-group-name "$LOG_GROUP" \
-          --log-stream-name "$LOG_STREAM" \
-          --region "$AWS_REGION" 2>/dev/null || true
+        # Run an AWS call, tolerating "already exists" but surfacing any
+        # other error (e.g. AccessDenied) as a warning instead of hiding it.
+        _aws_idempotent() {
+          local out
+          if ! out="$("$@" 2>&1)"; then
+            case "$out" in
+              *ResourceAlreadyExistsException*) ;;
+              *) echo "::warning::ship-logs: $2 $3 failed: $out" ;;
+            esac
+          fi
+        }
+        # Log group with 90-day retention, then this run's stream.
+        _aws_idempotent aws logs create-log-group \
+          --log-group-name "$LOG_GROUP" --region "$AWS_REGION"
+        _aws_idempotent aws logs put-retention-policy \
+          --log-group-name "$LOG_GROUP" --retention-in-days 90 --region "$AWS_REGION"
+        _aws_idempotent aws logs create-log-stream \
+          --log-group-name "$LOG_GROUP" --log-stream-name "$LOG_STREAM" --region "$AWS_REGION"
 
         # Build all events in a single Python invocation and upload via file
         python3 << 'PYEOF'
         import json
         import os
         import subprocess
-        import sys
         import time
         from pathlib import Path
 
@@ -121,11 +136,9 @@ runs:
         log_stream = os.environ["LOG_STREAM"]
         region     = os.environ["AWS_REGION"]
 
-        sequence_token = None
-
         def put_events(events):
-            """Send a batch of events to CloudWatch, returning the next sequence token."""
-            global sequence_token
+            """Send a batch of events to CloudWatch. Sequence tokens are ignored
+            by PutLogEvents since 2023, so none are tracked."""
             if not events:
                 return
             events_file = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "cw-events.json"
@@ -137,16 +150,9 @@ runs:
                 "--log-events", f"file://{events_file}",
                 "--region", region,
             ]
-            if sequence_token:
-                cmd += ["--sequence-token", sequence_token]
             result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                try:
-                    sequence_token = json.loads(result.stdout).get("nextSequenceToken")
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-            else:
-                print(f"Warning: put-log-events failed: {result.stderr.strip()}", file=sys.stderr)
+            if result.returncode != 0:
+                print(f"::warning::ship-logs: put-log-events failed: {result.stderr.strip()}")
 
         # Process each log file
         for logfile in sorted(log_dir.glob("*.log")):

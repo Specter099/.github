@@ -159,13 +159,12 @@ def scan_templates(template_dir: Path) -> tuple[list[tuple[Path, str, str]], int
     that fail to parse are counted in parse_errors rather than silently
     skipped, so callers can fail loudly on an incomplete scan.
     """
-    skip = {"manifest.json", "tree.json"}
     violations = []
     checked = 0
     parse_errors = 0
 
     for tpl_path in sorted(template_dir.rglob("*.template.json")):
-        if tpl_path.name in skip or tpl_path.name.startswith("asset."):
+        if tpl_path.name.startswith("asset."):
             continue
         try:
             template = json.loads(tpl_path.read_text(encoding="utf-8"))

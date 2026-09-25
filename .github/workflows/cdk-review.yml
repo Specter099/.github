@@ -1,7 +1,6 @@
----
 name: CDK Review
 
-"on":
+on:
   workflow_call:
     inputs:
       aws-region:
@@ -25,6 +24,14 @@ name: CDK Review
           deploy workflow
         type: string
         default: ""
+      require-aws:
+        description: >-
+          Fail the job when no AWS_ROLE_ARN is available. When false, synth,
+          diff, CDK Nag and Access Analyzer are skipped with a warning and the
+          job can still pass, so only set false for repos that deliberately
+          have no AWS access.
+        type: boolean
+        default: true
       enable-access-analyzer:
         description: >-
           Run IAM Access Analyzer CheckNoPublicAccess against synthesized
@@ -56,8 +63,9 @@ name: CDK Review
     secrets:
       AWS_ROLE_ARN:
         description: >-
-          IAM role ARN for OIDC federation
-          (optional — skips synth/diff if absent)
+          IAM role ARN for OIDC federation. Optional as a secret: an
+          AWS_ROLE_ARN repository or environment variable works too. With
+          neither, the job fails unless require-aws is false.
         required: false
 jobs:
   review:
@@ -76,8 +84,19 @@ jobs:
       pull-requests: write
     environment: ${{ inputs.environment }}
     env:
-      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      # Secret first, variable second: the `||` order is the only thing that
+      # makes a secret win when both exist.
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
     steps:
+      # This job runs PR-authored code with AWS credentials and a write-scoped
+      # token. Under pull_request_target that code could come from a fork, so
+      # refuse outright rather than trusting every caller to get it right.
+      - name: Refuse pull_request_target
+        if: github.event_name == 'pull_request_target'
+        run: |
+          echo "::error::This workflow must not be called from a pull_request_target trigger. Use pull_request." >&2
+          exit 1
+
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
@@ -125,7 +144,7 @@ jobs:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
-          pip install bandit
+          pip install bandit==1.9.4
           if [ "$ENABLE_LOGS" = "true" ]; then
             bandit -r . -ll --exclude ./.venv,./cdk.out,./lambda_layer 2>&1 | tee "$RUNNER_TEMP/ci-logs/bandit.log"
           else
@@ -161,12 +180,11 @@ jobs:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
+          # Installed here rather than left to the caller's dev requirements:
+          # otherwise the audit silently skipped for every repo without it.
+          pip install pip-audit==2.10.1
           _run_audit() {
-            if command -v pip-audit &> /dev/null; then
-              pip-audit -r requirements.txt
-            else
-              echo "::notice::pip-audit not installed — skipping audit"
-            fi
+            pip-audit -r requirements.txt
           }
           if [ "$ENABLE_LOGS" = "true" ]; then
             _run_audit 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
@@ -174,12 +192,30 @@ jobs:
             _run_audit
           fi
 
+      # Fail closed: a review that cannot reach AWS has run none of synth,
+      # diff, CDK Nag or Access Analyzer, and must not satisfy a required
+      # check by passing anyway.
+      - name: AWS credentials not configured
+        if: env.AWS_ROLE_ARN == ''
+        env:
+          REQUIRE_AWS: ${{ inputs.require-aws }}
+        run: |
+          if [ "$REQUIRE_AWS" = "true" ]; then
+            echo "::error::No AWS_ROLE_ARN (secret or variable) — cannot synth/diff. Set one, or pass require-aws: false to skip the AWS checks deliberately." >&2
+            exit 1
+          fi
+          echo "::warning::AWS_ROLE_ARN not set and require-aws is false — skipping synth, diff, CDK Nag and Access Analyzer"
+
       - name: Configure AWS credentials
         id: configure-aws-credentials
         if: env.AWS_ROLE_ARN != ''
         uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d  # v6.2.2
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          # Shortest STS allows. This job runs PR-authored code, so a leaked
+          # credential should expire quickly.
+          role-duration-seconds: 900
           aws-region: ${{ inputs.aws-region }}
 
       - name: CDK Synth
@@ -234,10 +270,14 @@ jobs:
           # contaminate this one with cdk_nag Metadata.
           diff_output=$(cdk diff --app cdk.out 2>&1) || true
           echo "$diff_output"
+          # Random delimiter: diff text is PR-derived, and a line reading
+          # exactly a fixed delimiter would end the block early and let the
+          # rest forge further step outputs.
+          delim="EOF_$(openssl rand -hex 16)"
           {
-            echo "diff<<EOF"
+            echo "diff<<$delim"
             echo "$diff_output"
-            echo "EOF"
+            echo "$delim"
           } >> "$GITHUB_OUTPUT"
           if [ "$ENABLE_LOGS" = "true" ]; then
             echo "$diff_output" > "$RUNNER_TEMP/ci-logs/cdk-diff.log"
@@ -259,10 +299,13 @@ jobs:
                 + '\n… diff truncated — see the workflow run logs for the full output.';
             }
             const body = `### CDK Diff\n\n\`\`\`\n${diff}\n\`\`\``;
-            const { data: comments } = await github.rest.issues.listComments({
+            // Paginate: listComments returns 30 per page, so on a busy PR
+            // the existing diff comment would be missed and duplicated.
+            const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
+              per_page: 100,
             });
             const existing = comments.find(c =>
               c.user.type === 'Bot' && c.body.startsWith('### CDK Diff')
@@ -282,10 +325,6 @@ jobs:
                 body,
               });
             }
-
-      - name: AWS credentials not configured
-        if: env.AWS_ROLE_ARN == ''
-        run: echo "::warning::AWS_ROLE_ARN secret not set — skipping synth/diff"
 
       - name: Generate log metadata
         if: always() && inputs.enable-ci-logs

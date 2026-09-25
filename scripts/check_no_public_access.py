@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 
 def partition_for_region(region: str) -> str:
@@ -44,6 +44,10 @@ def resolve_intrinsics(node, ctx):
     to a resource becomes a harmless placeholder ARN (never ``"*"``), so a
     genuinely public ``Principal: "*"`` is still detected while the document
     becomes syntactically valid.
+
+    Known false negative: a ``Principal`` given as ``{"Ref": "SomeParameter"}``
+    becomes a placeholder ARN, so a template whose parameter resolves to ``*``
+    at deploy time is not flagged.
     """
     pseudo = {
         "AWS::Partition": ctx["partition"],
@@ -91,7 +95,8 @@ def resolve_intrinsics(node, ctx):
     return node
 
 
-# Maps CloudFormation resource type → (policy property, Access Analyzer resource type)
+# Maps CloudFormation resource type → (policy property, Access Analyzer resource
+# type). A dotted property is a path into nested properties.
 POLICY_MAP = {
     "AWS::S3::BucketPolicy": ("PolicyDocument", "AWS::S3::Bucket"),
     "AWS::SQS::QueuePolicy": ("PolicyDocument", "AWS::SQS::Queue"),
@@ -102,21 +107,31 @@ POLICY_MAP = {
         "ResourcePolicy",
         "AWS::SecretsManager::Secret",
     ),
+    "AWS::S3::AccessPoint": ("Policy", "AWS::S3::AccessPoint"),
+    "AWS::EFS::FileSystem": ("FileSystemPolicy", "AWS::EFS::FileSystem"),
+    "AWS::OpenSearchService::Domain": (
+        "AccessPolicies",
+        "AWS::OpenSearchService::Domain",
+    ),
+    "AWS::ApiGateway::RestApi": ("Policy", "AWS::ApiGateway::RestApi"),
+    "AWS::Backup::BackupVault": ("AccessPolicy", "AWS::Backup::BackupVault"),
+    "AWS::Kinesis::ResourcePolicy": ("ResourcePolicy", "AWS::Kinesis::Stream"),
+    "AWS::DynamoDB::Table": (
+        "ResourcePolicy.PolicyDocument",
+        "AWS::DynamoDB::Table",
+    ),
     # AWS::IAM::Role intentionally excluded: CDK trust policies contain intrinsic
     # functions (Fn::Sub, Ref, Fn::If) that CheckNoPublicAccess cannot evaluate,
     # and OIDC trust policies trigger false positives.
 }
 
-# CDK metadata files to skip
-SKIP_FILES = {"manifest.json", "tree.json", "cdk.out"}
-
 
 def find_templates(template_dir: Path) -> list[Path]:
-    templates = []
-    for path in sorted(template_dir.rglob("*.template.json")):
-        if path.name not in SKIP_FILES and not path.name.startswith("asset."):
-            templates.append(path)
-    return templates
+    return [
+        path
+        for path in sorted(template_dir.rglob("*.template.json"))
+        if not path.name.startswith("asset.")
+    ]
 
 
 def extract_policies(
@@ -138,7 +153,9 @@ def extract_policies(
         if cf_type not in POLICY_MAP:
             continue
         policy_prop, analyzer_type = POLICY_MAP[cf_type]
-        policy_doc = resource.get("Properties", {}).get(policy_prop)
+        policy_doc = resource.get("Properties", {})
+        for key in policy_prop.split("."):
+            policy_doc = policy_doc.get(key) if isinstance(policy_doc, dict) else None
         if policy_doc is None:
             continue
         if isinstance(policy_doc, str):
@@ -169,9 +186,14 @@ def check_policy(
             "public": is_public,
             "reasons": reasons,
         }
-    except ClientError as exc:
-        code = exc.response["Error"]["Code"]
-        msg = exc.response["Error"]["Message"]
+    except (ClientError, BotoCoreError) as exc:
+        # BotoCoreError covers NoCredentialsError / EndpointConnectionError,
+        # which would otherwise escape as a traceback instead of exit 2.
+        if isinstance(exc, ClientError):
+            code = exc.response["Error"]["Code"]
+            msg = exc.response["Error"]["Message"]
+        else:
+            code, msg = type(exc).__name__, str(exc)
         return {
             "logical_id": logical_id,
             "resource_type": analyzer_type,
@@ -250,7 +272,7 @@ def main() -> int:
     # Context for resolving CloudFormation pseudo-parameters to literals.
     try:
         account = boto3.client("sts").get_caller_identity()["Account"]
-    except ClientError:
+    except (ClientError, BotoCoreError):
         account = "000000000000"
     ctx = {
         "partition": partition_for_region(args.aws_region),
