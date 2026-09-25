@@ -21,6 +21,12 @@ Trigger convention in caller repos:
 
 All three trigger on both `push: [main]` **and** `pull_request: [main]`. Per the trigger convention, security scans belong to PR flow only. Remove the `push:` block from each.
 
+### Separate review role and environment (needs AWS + GitHub settings)
+**Files:** `cdk-review.yml`, `static-site-review.yml`; IAM; each caller's environments
+- Review jobs run PR-authored code and currently bind the `production` environment, so they can assume the deploy role (review S1).
+- Workflow side already done: 900s session cap and `role-session-name`. Still needed: a read-only review role trusted on `repo:Specter099/<repo>:pull_request`, a `review` environment holding it, then flip the review workflows' `environment` default to `review`; restrict `production` to `main` and trust the deploy role only on `...:environment:production`.
+- Order matters: flipping the default before callers have a `review` environment would break every review run.
+
 ### Pin internal actions/workflows (`@main`)
 **Files:** every workflow that uses `Specter099/.github/.github/actions/*@main`
 - Third-party actions are SHA-pinned and Dependabot bumps them; the internal `@main` refs are what's left (WF004 baseline).
@@ -49,25 +55,10 @@ All three trigger on both `push: [main]` **and** `pull_request: [main]`. Per the
 - `find "$YAML_DIR" -maxdepth 1 …` misses nested CloudFormation YAML directories.
 - Remove `-maxdepth 1` or parameterize.
 
-### Normalize YAML file headers
-**Files:** all workflows
-- `cdk-review.yml` and `python-ci.yml` start with `---` + `"on":`. Others don't.
-- `.yamllint.yml` already tolerates both. Pick one and apply across the board for consistency.
-
-### Standardize AWS role ARN source
-**Files:** all AWS workflows
-- Only `repo-backup.yml` accepts `secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN`; the other five take the secret only.
-- Pick one convention (the ARN isn't secret, so `vars` works) and apply it everywhere.
-
 ### Move `backup.yml` off the `production` environment
 **File:** [`backup.yml`](.github/workflows/backup.yml)
 - Already calls `repo-backup.yml`, but still passes `environment: production`, so the backup runs under the prod environment and role.
 - Switch it to `environment: backup` (the callee's default) once that environment has its own role.
-
-### Close `gitleaks-action` license gap (contingent)
-**File:** [`gitleaks.yml`](.github/workflows/gitleaks.yml), [`python-ci.yml`](.github/workflows/python-ci.yml)
-- `gitleaks/gitleaks-action@v2` requires a paid license for private-org scans above a free-tier threshold.
-- If that threshold is ever hit, swap to `docker://zricethezav/gitleaks:latest detect --source=. --redact`.
 
 ---
 

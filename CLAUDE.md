@@ -68,7 +68,7 @@ docs/
 
 ## Architecture
 
-All workflows use `workflow_call` triggers — caller repos reference them with `uses:` and pass inputs. AWS authentication is OIDC-based: callers must have an `AWS_ROLE_ARN` secret on their GitHub environment (default: `production`).
+All workflows use `workflow_call` triggers — caller repos reference them with `uses:` and pass inputs. AWS authentication is OIDC-based: callers provide `AWS_ROLE_ARN` as a secret or a variable on the repo or its GitHub environment (default: `production`). Workflows read `secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN`, so a secret wins, and fail with a clear error when neither is set (`cdk-review` only skips, and only when `require-aws: false`). Every assume-role sets `role-session-name: gha-<run_id>-<attempt>` for CloudTrail; review workflows also cap sessions at 900s.
 
 **Workflow dependency chain:**
 - `cdk-review` and `cdk-deploy` both use the `setup-cdk` composite action
@@ -91,7 +91,8 @@ All workflows use `workflow_call` triggers — caller repos reference them with 
 
 | Secret/Variable | Scope | Purpose |
 |---|---|---|
-| `AWS_ROLE_ARN` | Environment secret | IAM role ARN for OIDC federation (all AWS workflows) |
+| `AWS_ROLE_ARN` | Secret or variable (repo or environment) | IAM role ARN for OIDC federation (all AWS workflows) |
+| `GITLEAKS_LICENSE` | Secret (optional) | gitleaks-action licence for org repos past the free tier (`gitleaks`, `python-ci`) |
 | `BACKUP_S3_BUCKET` | Repository variable | S3 bucket for repo backups (`backup.yml`) |
 | `CDK_CLI_VERSION` | Repository variable | CDK CLI version fallback when the `cdk-version` input is unset |
 | `CI_LOGS_BUCKET` | Repository variable | S3 bucket fallback for CI log shipping (`ship-logs`) |

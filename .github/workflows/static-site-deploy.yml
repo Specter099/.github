@@ -81,8 +81,10 @@ on:
         default: ""
     secrets:
       AWS_ROLE_ARN:
-        description: IAM role ARN for OIDC federation
-        required: true
+        description: >-
+          IAM role ARN for OIDC federation. Optional as a secret: an
+          AWS_ROLE_ARN repository or environment variable works too.
+        required: false
 
 jobs:
   deploy:
@@ -96,6 +98,11 @@ jobs:
       id-token: write
       contents: read
     environment: ${{ inputs.environment }}
+    env:
+      # Secret first, variable second: the `||` order is the only thing that
+      # makes a secret win when both exist. `vars` resolves against the
+      # caller's repository (and its environment, since this job binds one).
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -136,10 +143,20 @@ jobs:
             npm run build --prefix "$FRONTEND_DIR"
           fi
 
+      # The ARN can come from a secret or a variable (see AWS_ROLE_ARN in the
+      # job env), so neither is `required:`. Fail here with a clear message
+      # rather than inside configure-aws-credentials on an empty role.
+      - name: Verify a role ARN is available
+        if: env.AWS_ROLE_ARN == ''
+        run: |
+          echo "::error::No AWS_ROLE_ARN available. Set it as a secret or a variable on the calling repo (or its environment)." >&2
+          exit 1
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d  # v6.2.2
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Set up QEMU
@@ -216,8 +233,12 @@ jobs:
         run: |
           set -o pipefail
           _run_smoke() {
+            # On a connection failure curl still prints 000 via -w and exits
+            # non-zero. `|| echo 000` would append a second 000 ("000000"),
+            # which is neither "000" nor >= 400, so the test passed on a dead
+            # endpoint. Keep curl's own output and ignore its exit code.
             status=$(curl -o /dev/null -s -w "%{http_code}" --max-time 15 \
-              "$SMOKE_TEST_URL" || echo "000")
+              "$SMOKE_TEST_URL") || true
             echo "Smoke test HTTP status: $status"
             {
               echo "## Smoke Test"

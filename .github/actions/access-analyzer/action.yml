@@ -15,7 +15,10 @@ inputs:
       Leave empty to skip.
     default: ""
   fail-on-public-access:
-    description: Fail when public access is detected (set 'false' for warn-only)
+    description: >-
+      Fail when public access is detected (set 'false' to only warn about
+      findings). An incomplete scan (unparseable template, API error) always
+      fails, since it hasn't shown the templates are safe.
     default: "true"
   aws-region:
     description: AWS region for Access Analyzer API calls
@@ -26,7 +29,7 @@ runs:
   steps:
     - name: Install access analyzer dependencies
       shell: bash
-      run: pip install --quiet --upgrade boto3 cfn-flip
+      run: pip install --quiet boto3==1.43.102 cfn-flip==1.3.0
 
     - name: Convert CloudFormation YAML templates to JSON
       if: inputs.yaml-template-dir != ''
@@ -35,12 +38,22 @@ runs:
         YAML_DIR: ${{ inputs.yaml-template-dir }}
       run: |
         mkdir -p cfn-yaml-out
-        find "$YAML_DIR" -maxdepth 1 \( -name "*.yaml" -o -name "*.yml" \) | while read -r f; do
+        # A template that fails to convert would otherwise just go unscanned
+        # while the rest pass, so any conversion failure fails the step.
+        failed=0
+        while read -r f; do
           out="cfn-yaml-out/$(basename "${f%.*}").template.json"
-          cfn-flip "$f" "$out" && echo "Converted: $f -> $out"
-        done
+          if cfn-flip "$f" "$out"; then
+            echo "Converted: $f -> $out"
+          else
+            echo "::error::cfn-flip could not convert $f"
+            failed=1
+          fi
+        done < <(find "$YAML_DIR" -maxdepth 1 \( -name "*.yaml" -o -name "*.yml" \))
+        exit "$failed"
 
     - name: Check no public access
+      id: check
       shell: bash
       env:
         TEMPLATE_DIR: ${{ inputs.template-dir }}
@@ -67,7 +80,9 @@ runs:
         fi
         exit "$rc"
 
+    # Only the check step's own failure means public access (or an incomplete
+    # scan); an earlier pip or cfn-flip failure must not be reported as one.
     - name: Notify on public access detected
-      if: failure()
+      if: failure() && steps.check.outcome == 'failure'
       shell: bash
-      run: echo "::error::IAM Access Analyzer detected resources that grant public access. Review the job output for details."
+      run: echo "::error::IAM Access Analyzer found public access or could not complete the scan. Review the job output for details."

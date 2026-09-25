@@ -7,6 +7,9 @@ on:
 
 jobs:
   backup:
+    # Forks that keep Actions enabled would otherwise run this weekly and fail
+    # against the upstream role.
+    if: github.repository == 'Specter099/.github'
     # With restricted default workflow permissions, a reusable workflow's job
     # requesting id-token: write fails at startup unless the caller job
     # explicitly grants it - this job wasn't granting anything, so every run
@@ -19,4 +22,7 @@ jobs:
     with:
       s3-bucket: ${{ vars.BACKUP_S3_BUCKET }}
       environment: production
-    secrets: inherit
+    # Pass only what the callee needs, not every secret this repo holds. An
+    # environment secret on the callee's job still takes precedence.
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}

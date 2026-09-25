@@ -29,9 +29,11 @@ jobs:
     concurrency:
       group: validate-bucket-names-${{ github.ref }}
       cancel-in-progress: true
+    # Read-only: violations are reported in the job log, which names every
+    # file and line. (A PR comment used to repeat a fixed template on every
+    # failing push and needed pull-requests: write for it.)
     permissions:
       contents: read
-      pull-requests: write
 
     steps:
       - name: Checkout caller repo
@@ -57,7 +59,6 @@ jobs:
           python-version: ${{ inputs.python-version }}
 
       - name: Validate S3 bucket names
-        id: validate
         env:
           SCAN_PATH: ${{ inputs.scan-path }}
           TEMPLATE_DIR: ${{ inputs.template-dir }}
@@ -66,34 +67,3 @@ jobs:
           [ -n "$SCAN_PATH" ]    && args+=(--path "$SCAN_PATH")
           [ -n "$TEMPLATE_DIR" ] && args+=(--template-dir "$TEMPLATE_DIR")
           python .shared-github/scripts/validate_bucket_names.py "${args[@]}"
-
-      - name: Comment on PR (violations only)
-        if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
-        with:
-          script: |
-            const output = `### S3 Bucket Naming Violations
-
-            One or more S3 \`bucket_name=\` values in this PR do not conform
-            to the required convention:
-
-            \`\`\`
-            {prefix}-{12-digit-account-id}-{aws-region}-an
-            \`\`\`
-
-            **Example:** \`bitwarden-logs-123456789012-us-east-1-an\`
-
-            Run the script locally to see exactly which files and lines need
-            to be updated:
-
-            \`\`\`bash
-            python scripts/validate_bucket_names.py --path .
-            \`\`\`
-            `;
-
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: output
-            });

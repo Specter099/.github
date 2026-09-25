@@ -7,6 +7,35 @@ up on [the 2026-07-25 review](2026-07-25-actions-security-efficiency-review.md)
 Findings are ordered by priority. Each one was checked against the code, and
 where possible run.
 
+## Status (follow-up commit, same day)
+
+| Finding | Status |
+|---|---|
+| N1 smoke test passes on dead endpoint | **Fixed** in both deploy workflows (verified against a closed port, a 200 and a 404) |
+| S1 PR code with production role | **Partly fixed:** 900s session cap and `role-session-name` on review jobs. The review role and environment need AWS and GitHub settings (TODO P0) |
+| S5 fixed `EOF` delimiter | **Fixed**, and the two baseline entries were removed |
+| S6 internal `@main` pins | **Open:** needs release tags on this repo first (TODO P0) |
+| N2 `cdk-review` green without AWS | **Fixed:** new `require-aws` input, default `true`, fails closed |
+| N3 `pip-audit` silently skipped | **Fixed:** installed (pinned) by the workflow |
+| N4 cfn-flip failure swallowed | **Fixed:** any conversion failure fails the step |
+| S7 `pull_request_target` | **Fixed:** guard step in both review workflows. `validate-bucket-names` dropped its comment and `pull-requests: write` (also N7) |
+| S8 unpinned installs | **Fixed:** bandit, pip-audit, pytest-cov, boto3 and cfn-flip are pinned exactly (no hash pinning yet) |
+| S9 misleading "public access" notice | **Fixed:** gated on the check step's outcome, and the input doc explains exit 2 |
+| S10 Access Analyzer coverage | **Extended:** S3 access points, EFS, OpenSearch, API Gateway REST APIs, Backup vaults, Kinesis and DynamoDB resource policies. Lambda permissions and bucket ACLs are still unchecked |
+| S11 traceback without credentials | **Fixed:** `BotoCoreError` → exit 2, with tests |
+| S12 no `role-session-name` | **Fixed** at all seven assume-role sites |
+| S13 gitleaks licence | **Fixed:** optional `GITLEAKS_LICENSE` secret in `gitleaks` and `python-ci` |
+| S14 `backup.yml` | **Partly fixed:** fork guard, and an explicit secret instead of `secrets: inherit`. Still on `production` |
+| S3 unmasked logs | **Partly fixed:** `--verbose` dropped from `cdk deploy` |
+| N5 pip cache on YAML-only callers | **Fixed** |
+| N6 diff comment pagination | **Fixed** |
+| N8 silent log-shipping failures | **Fixed:** warnings, not `2>/dev/null` |
+| N9 gitleaks per matrix leg | **Fixed:** first leg only |
+| N10 actionlint compiled every run | **Fixed:** binary cached. ShellCheck stays off (enabling it is its own cleanup) |
+| E12 matrix legs overwrite logs | **Fixed:** new `ship-logs` `key-suffix`, passed by `python-ci` |
+| Role ARN source inconsistent | **Fixed:** every AWS workflow takes a secret or a variable |
+| E11 `ENABLE_LOGS` boilerplate | **Open:** a large refactor of every step, better as its own PR |
+
 ## P0 — fix now
 
 ### N1 — The deploy smoke test passes when the site is unreachable *(High, verified)*

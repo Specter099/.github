@@ -56,15 +56,6 @@ accepted:
   - fingerprint: "WF004:.github/workflows/validate-bucket-names.yml:checkout of Specter099/.github with no ref (implicit default branch)"
     review: S6
 
-  # --- WF007: fixed GITHUB_OUTPUT heredoc delimiter on cdk diff output ------
-  # Review finding S5. cdk diff text is PR-derived; a line reading exactly
-  # `EOF` terminates the block early and can forge later step outputs.
-  - fingerprint: "WF007:.github/workflows/cdk-review.yml:output 'diff' uses fixed heredoc delimiter 'EOF'"
-    review: S5
-  - fingerprint: "WF007:.github/workflows/static-site-review.yml:output 'diff' uses fixed heredoc delimiter 'EOF'"
-    review: S5
-
-
   # --- WF011: vestigial input ----------------------------------------------
   # Kept deliberately for caller interface parity with the deploy workflows;
   # both declarations carry a comment saying so. Accepted indefinitely rather
