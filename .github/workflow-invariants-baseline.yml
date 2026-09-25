@@ -53,8 +53,6 @@ accepted:
     review: new-action-2026-07-26
   - fingerprint: "WF004:.github/workflows/static-site-review.yml:Specter099/.github/.github/actions/ship-logs@main"
     review: S6
-  - fingerprint: "WF004:.github/workflows/validate-bucket-names.yml:checkout of Specter099/.github with no ref (implicit default branch)"
-    review: S6
 
   # --- WF011: vestigial input ----------------------------------------------
   # Kept deliberately for caller interface parity with the deploy workflows;

@@ -45,9 +45,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: Specter099/.github
+          # Pin the scripts to the same commit this reusable workflow was
+          # loaded from, so workflow and scripts always move together
+          # instead of the scripts floating on main independently.
+          ref: ${{ job.workflow_sha }}
           path: .shared-github
           # Only the validation script is needed — skip cloning the rest of
-          # this repo. ref pinning is tracked separately (S6 / WF004 baseline).
+          # this repo. job.workflow_sha pins this checkout to the reusable
+          # workflow commit (S6 / WF004). actionlint's context model does
+          # not include it yet; local-ci.sh ignores that false positive.
           sparse-checkout: |
             scripts
           sparse-checkout-cone-mode: true

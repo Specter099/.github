@@ -237,6 +237,10 @@ run "workflow invariants" required \
 # an actionlint already on PATH, but we can say so out loud when it differs from
 # what CI installs, rather than letting the drift be silent.
 ACTIONLINT_VERSION="v1.7.7"
+# job.workflow_sha is a real job-context property (GitHub, Sept 2026) used to
+# pin reusable-workflow self-checkouts. actionlint 1.7.7's type does not
+# include it yet, so the expression check is a false positive.
+ACTIONLINT_IGNORE='property "workflow_sha" is not defined'
 
 if [ "$FAST" = 1 ]; then
   # Explicit opt-out; counts as skipped, so PASS stays reachable.
@@ -247,13 +251,17 @@ elif have actionlint; then
     "${ACTIONLINT_VERSION#v}"|"$ACTIONLINT_VERSION") : ;;
     *) say "${YELLOW}  note:${RESET} actionlint on PATH is ${actual:-unknown}, CI uses ${ACTIONLINT_VERSION} — findings may differ" ;;
   esac
-  run "actionlint" required actionlint -no-color -shellcheck= .github/workflows/*.yml
+  run "actionlint" required actionlint -no-color -shellcheck= \
+    -ignore "$ACTIONLINT_IGNORE" \
+    .github/workflows/*.yml
 elif have go; then
   say "${DIM}  installing actionlint (one-off, via go install)...${RESET}"
   if GOBIN="$(go env GOPATH)/bin" go install \
        "github.com/rhysd/actionlint/cmd/actionlint@$ACTIONLINT_VERSION" >/dev/null 2>&1; then
     export PATH="$(go env GOPATH)/bin:$PATH"
-    run "actionlint" required actionlint -no-color -shellcheck= .github/workflows/*.yml
+    run "actionlint" required actionlint -no-color -shellcheck= \
+      -ignore "$ACTIONLINT_IGNORE" \
+      .github/workflows/*.yml
   else
     missing "actionlint" "go install github.com/rhysd/actionlint/cmd/actionlint@$ACTIONLINT_VERSION"
   fi
