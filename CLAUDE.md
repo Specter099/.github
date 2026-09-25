@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Shared GitHub Actions reusable workflows and composite actions for the Specter099 org. Provides standardized CI/CD pipelines for CDK projects, static sites (frontend + CDK infra), pure Python libraries, repo backups to S3, secret scanning, IAM Access Analyzer checks, and S3 bucket naming convention enforcement. Consumed by caller repos via `uses: Specter099/.github/.github/workflows/<name>@main`.
+Shared GitHub Actions reusable workflows and composite actions for the Specter099 user account (not an org — no org-level secrets/variables exist). Provides standardized CI/CD pipelines for CDK projects, static sites (frontend + CDK infra), pure Python libraries, repo backups to S3, secret scanning, IAM Access Analyzer checks, and S3 bucket naming convention enforcement. Consumed by caller repos via `uses: Specter099/.github/.github/workflows/<name>@main`.
 
 ## Common Commands
 
@@ -35,6 +35,9 @@ python scripts/validate_bucket_names.py --path /path/to/cdk/project
 # Run access analyzer check locally (requires AWS credentials)
 python scripts/check_no_public_access.py --template-dir /path/to/cdk.out
 
+# Run this repo's own tests (same as self-test.yml CI)
+pytest tests/ -v
+
 ## Directory Structure
 
 .github/
@@ -63,6 +66,7 @@ scripts/
   check_workflow_invariants.py # Org workflow conventions (WF001–WF016)
   check_no_public_access.py   # CLI for IAM Access Analyzer CheckNoPublicAccess API
   validate_bucket_names.py    # AST-based S3 bucket_name= convention checker
+tests/                        # pytest suite for the helper scripts
 docs/
   reviews/                    # Point-in-time security/efficiency reviews
 

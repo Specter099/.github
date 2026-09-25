@@ -76,3 +76,14 @@ All three trigger on both `push: [main]` **and** `pull_request: [main]`. Per the
 - Option A: CI uploads `dist/` artifact, CD downloads it. Reproducible, faster CD, but adds artifact plumbing.
 - Option B: Keep current. CI build is validation-only; CD rebuild is the canonical deploy artifact.
 - Decide and document.
+
+---
+
+## Hygiene
+
+### Add SECURITY.md and CODEOWNERS
+- This is the account's special `.github` repo — also the natural home for a `profile/README.md` if one is ever wanted.
+
+### Move ship-logs Python heredoc to `scripts/`
+**File:** [`actions/ship-logs/action.yml`](.github/actions/ship-logs/action.yml)
+- The embedded Python block would be unit-testable as `scripts/ship_logs.py`.
