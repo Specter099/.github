@@ -107,16 +107,13 @@ POLICY_MAP = {
     # and OIDC trust policies trigger false positives.
 }
 
-# CDK metadata files to skip
-SKIP_FILES = {"manifest.json", "tree.json", "cdk.out"}
-
 
 def find_templates(template_dir: Path) -> list[Path]:
-    templates = []
-    for path in sorted(template_dir.rglob("*.template.json")):
-        if path.name not in SKIP_FILES and not path.name.startswith("asset."):
-            templates.append(path)
-    return templates
+    return [
+        path
+        for path in sorted(template_dir.rglob("*.template.json"))
+        if not path.name.startswith("asset.")
+    ]
 
 
 def extract_policies(

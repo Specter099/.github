@@ -17,13 +17,6 @@
 # above a finding don't silently un-baseline it)
 
 accepted:
-  # --- WF012: README documents an input that does not exist -----------------
-  # Review finding "Documentation drift" #1. python-ci's input is
-  # `python-versions` and takes a JSON array; GitHub rejects unknown inputs,
-  # so this example fails outright for anyone who copies it.
-  - fingerprint: "WF012:README.md:python-ci.yml example passes 'python-version', which is not a declared input"
-    review: docs-1
-
   # --- WF004: internal actions referenced at mutable @main ------------------
   # Review finding S6 / TODO.md P0. A push to this repo's default branch
   # propagates instantly to every caller, including deploys holding prod

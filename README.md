@@ -166,7 +166,7 @@ Archives the repo at HEAD with `git archive`, uploads a timestamped zip (`<repo>
 | `s3-bucket` | **yes** | — | S3 bucket name |
 | `s3-prefix` | no | repo name | Key prefix (folder) within the bucket |
 | `aws-region` | no | `us-east-1` | AWS region of the bucket |
-| `environment` | no | `production` | GitHub environment with `AWS_ROLE_ARN` secret |
+| `environment` | no | `backup` | GitHub environment with `AWS_ROLE_ARN` secret |
 
 **Usage**
 
@@ -194,7 +194,7 @@ Lints, format-checks, and secret-scans a pure Python project, then runs pytest. 
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `python-version` | no | `"3.12"` | Python version |
+| `python-versions` | no | `'["3.12"]'` | JSON array of Python versions for the matrix |
 | `requirements-path` | no | `"requirements-dev.txt"` | Path to dev requirements file |
 | `tests-dir` | no | `"tests/"` | Directory passed to pytest |
 
@@ -205,7 +205,7 @@ jobs:
   ci:
     uses: Specter099/.github/.github/workflows/python-ci.yml@main
     with:
-      python-version: "3.12"                   # optional
+      python-versions: '["3.12"]'            # optional
       requirements-path: requirements-dev.txt  # optional
       tests-dir: tests/                        # optional
 ```
