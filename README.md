@@ -14,7 +14,29 @@ Reusable workflows and composite actions for CDK projects.
 | `python-ci` | Workflow | PR check for any pure Python project |
 | `setup-cdk` | Action | Composite action — install Python/Node/CDK |
 
-> **Required secret:** All workflows assume `AWS_ROLE_ARN` is set on the calling repo's `production` environment (or the environment passed via `environment` input).
+> **AWS role:** Every AWS workflow reads `AWS_ROLE_ARN` from a secret or, failing that, a variable, on the calling repo or its `production` environment (or the environment passed via the `environment` input). A secret wins when both exist. If neither is set, the job fails with a clear error. The one exception is `cdk-review` with `require-aws: false`.
+
+---
+
+## Saving CI minutes
+
+The reusable **check** workflows (`cdk-review`, `static-site-review`, `python-ci`, `gitleaks`, `validate-bucket-names`, `access-analyzer-check`) skip Dependabot PRs on the job (`if: ${{ github.actor != 'dependabot[bot]' }}`). A skipped required status check is treated as passing, so merge is not blocked. Deploy and backup workflows are not skipped — those run after merge.
+
+Reusable `workflow_call` targets cannot filter paths. Add this to every caller PR workflow so docs-only PRs don't pay for synth, npm, or Access Analyzer:
+
+```yaml
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+```
+
+`scripts/check_workflow_invariants.py` enforces both conventions when run against a caller (`WF015` skip-Dependabot, `WF016` paths-ignore). `self-test.yml` in this repo already has both.
+
+Static-site repos that bundle arm64 Docker/Lambda assets must pass `enable-docker-bundling: true` to `static-site-deploy`; the default is `false` so pure S3/CloudFront sites skip QEMU/Buildx setup.
 
 ---
 
@@ -30,6 +52,7 @@ Lints, unit tests, and dependency-audits a CDK Python project, then runs `cdk sy
 |-------|----------|---------|-------------|
 | `aws-region` | no | `us-east-1` | AWS region |
 | `cdk-version` | no | `2.1106.1` | CDK CLI version |
+| `require-aws` | no | `true` | Fail when no `AWS_ROLE_ARN` is available. Set `false` only for repos with no AWS access; synth/diff/Nag/Access Analyzer are then skipped |
 | `smoke-test-url` | no | `""` | Unused — accepted for interface parity with deploy |
 
 **Usage**
@@ -144,7 +167,7 @@ Archives the repo at HEAD with `git archive`, uploads a timestamped zip (`<repo>
 | `s3-bucket` | **yes** | — | S3 bucket name |
 | `s3-prefix` | no | repo name | Key prefix (folder) within the bucket |
 | `aws-region` | no | `us-east-1` | AWS region of the bucket |
-| `environment` | no | `production` | GitHub environment with `AWS_ROLE_ARN` secret |
+| `environment` | no | `backup` | GitHub environment with `AWS_ROLE_ARN` secret |
 
 **Usage**
 
@@ -172,7 +195,7 @@ Lints, format-checks, and secret-scans a pure Python project, then runs pytest. 
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `python-version` | no | `"3.12"` | Python version |
+| `python-versions` | no | `'["3.12"]'` | JSON array of Python versions for the matrix |
 | `requirements-path` | no | `"requirements-dev.txt"` | Path to dev requirements file |
 | `tests-dir` | no | `"tests/"` | Directory passed to pytest |
 
@@ -183,12 +206,101 @@ jobs:
   ci:
     uses: Specter099/.github/.github/workflows/python-ci.yml@main
     with:
-      python-version: "3.12"                   # optional
+      python-versions: '["3.12"]'            # optional
       requirements-path: requirements-dev.txt  # optional
       tests-dir: tests/                        # optional
 ```
 
-> **Note:** gitleaks scans the full git history. `GITHUB_TOKEN` is injected automatically by GitHub Actions — no secrets configuration needed.
+> **Note:** gitleaks scans the full git history once per run (on the first matrix version). `GITHUB_TOKEN` is injected automatically. Organization-owned repos beyond gitleaks' free tier can pass an optional `GITLEAKS_LICENSE` secret (also accepted by `gitleaks.yml`).
+
+---
+
+## Local development
+
+Run the gate before committing. It executes the same stages as
+`.github/workflows/self-test.yml`, so a green run locally means a green check on
+the PR — and it takes about three seconds.
+
+```bash
+pip install -r requirements-dev.txt
+./scripts/local-ci.sh
+```
+
+| Flag | What it does |
+|------|--------------|
+| *(none)* | yamllint, ruff, pytest, workflow invariants, actionlint; zizmor advisory |
+| `--fix` | `ruff format` first, then the gate |
+| `--strict` | Ignore the invariants baseline — shows the outstanding work list |
+| `--fast` | Explicitly opt out of `zizmor` and `actionlint` (skipped, not missing) |
+| `--cdk-project DIR` | Also run the CD-side checks against a caller repo (below) |
+| `--act` | Execute `self-test.yml` locally under [`act`](https://github.com/nektos/act) (needs Docker) |
+| `--install-hook` | Install as `.git/hooks/pre-commit` (bypass with `git commit --no-verify`) |
+
+Stages come in three kinds, and the distinction is load-bearing:
+
+- **required** — `yamllint`, `ruff`, `pytest`, workflow invariants, `actionlint`.
+  These are what CI runs. If one *cannot* run because its tool is absent, the
+  verdict is **INCOMPLETE** (exit 1), never PASS. An earlier version skipped a
+  missing `yamllint` and still printed "Safe to commit", which reproduced the
+  very local/CI divergence the gate exists to prevent — "I didn't check" is not
+  "it's fine".
+- **advisory** — `zizmor`, `act`. Report findings, never block.
+- **optional** — `cdk`, `aws`. Only used by the CD stages; skipped when absent.
+
+`actionlint` is auto-installed via `go install` at a pinned version when Go is
+present; if one is already on `PATH` at a different version, the gate says so,
+since two versions report different findings. Use `--fast` to opt out of
+`zizmor` and `actionlint` explicitly — an explicit opt-out counts as skipped
+rather than missing, so PASS is still reachable.
+
+Python tools are invoked as `python3 -m ruff` / `python3 -m pytest` rather than
+via a bare command, and `ruff` is pinned exactly in `requirements-dev.txt`.
+Both are load-bearing: a `ruff` shadowed earlier on `PATH` was a different
+version with a different default rule set than the one `pip` installed, which is
+the "green locally, red in CI" divergence this gate exists to prevent.
+`ruff.toml` then declares the rule set explicitly so a version bump can't move
+the goalposts silently.
+
+### Testing the CD path
+
+A deploy can't be genuinely rehearsed locally — it needs AWS and a real CDK app.
+What `--cdk-project` does instead is run the checks `cdk-review` would run,
+against a real synthesized template tree:
+
+```bash
+./scripts/local-ci.sh --cdk-project ../bitwarden-cdk
+```
+
+That runs `cdk synth`, then validates bucket names against both the Python
+source and the synthesized templates, then runs the IAM Access Analyzer check —
+which needs real credentials and is skipped with a notice if `aws sts
+get-caller-identity` fails. It also runs the workflow invariants against the
+caller repo, which is where trigger-convention violations tend to live.
+
+### Workflow invariants
+
+`scripts/check_workflow_invariants.py` enforces the conventions in this document
+that no off-the-shelf linter knows about — undeclared `workflow_call` secrets,
+unpinned internal actions, `pull_request_target`, script injection into `run:`,
+checks leaking into deploy workflows, README examples passing inputs that don't
+exist, Dependabot skips on check jobs, and `paths-ignore` on PR triggers.
+`--list-checks` prints all of them.
+
+Findings that predate the checker are accepted in
+`.github/workflow-invariants-baseline.yml`. That file is a **work list, not a
+suppression list**: each entry cites the review finding it corresponds to, and
+deleting an entry is how you claim the fix. A test asserts the baseline contains
+no stale entries, so fixing something forces its entry out and a later
+regression has nothing left to hide behind.
+
+**New violations fail the gate at every severity, baselined ones don't.** The
+gate always passes `--fail-on-warn`, so a newly-introduced `warn` finding blocks
+just as an `error` does — the severities rank importance, they don't decide what
+blocks. This matters because WF004 (mutable internal `@main`) and WF007
+(forgeable `GITHUB_OUTPUT` delimiter) are `warn`, and those are two of the
+security findings the review pins down; leaving them advisory in the mode CI
+runs would have let a fresh violation of either through the required check.
+Running the checker directly without `--fail-on-warn` is the lenient mode.
 
 ---
 
@@ -213,3 +325,9 @@ Installs Python 3.12, Node 22, a pinned CDK CLI version globally, and Python dep
     cdk-version: "2.1106.1"
     requirements-path: infra/requirements.txt
 ```
+
+---
+
+## Default PR Template
+
+[`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) in this repo is picked up by GitHub as the **org-wide default pull request template**. Any repo in the `Specter099` org that doesn't define its own `.github/pull_request_template.md` will use it automatically — no per-repo setup required.

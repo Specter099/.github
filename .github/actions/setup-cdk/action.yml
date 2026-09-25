@@ -1,7 +1,22 @@
 name: Setup CDK
-description: Install Python 3.12, Node 22, pinned CDK CLI, and Python dependencies
+description: Install Python 3.12, Node (22 by default), pinned CDK CLI, and Python dependencies
 
 inputs:
+  node-version-file:
+    description: >-
+      Path to a version file (`.nvmrc`, `.node-version`) relative to the repo
+      root. Takes precedence over `node-version`, so a repo that keeps an
+      `.nvmrc` for local development gets the same Node here without stating
+      the version twice. Must exist when set, or setup-node fails.
+    required: false
+    default: ""
+  node-version:
+    description: >-
+      Node version to install. Ignored when `node-version-file` is set. Falls
+      back to the default below if empty, which is the version this action is
+      tested against.
+    required: false
+    default: ""
   cdk-version:
     description: >-
       CDK CLI version. Composite actions cannot read the `vars` context,
@@ -27,20 +42,53 @@ runs:
         VER="${INPUT_VER:-2.1106.1}"
         echo "version=$VER" >> "$GITHUB_OUTPUT"
 
-    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
       with:
         python-version: "3.12"
         cache: pip
+        # Tie the pip cache to the caller's requirements file (default
+        # requirements.txt). Without this, setup-python hashes
+        # **/requirements.txt which misses monorepo callers that pass
+        # e.g. infra/requirements.txt.
+        cache-dependency-path: ${{ inputs.requirements-path }}
 
-    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+    # Exactly one of the two reaches setup-node: given both, it honours
+    # node-version and ignores the file, so the unused one must come through
+    # empty. That cannot be expressed inline — `X && '' || Y` yields Y, because
+    # an empty string is falsy — so resolve it here, as the CDK version is.
+    - name: Resolve Node version
+      id: node-ver
+      shell: bash
+      env:
+        INPUT_FILE: ${{ inputs.node-version-file }}
+        INPUT_VER: ${{ inputs.node-version }}
+      run: |
+        if [ -n "$INPUT_FILE" ]; then
+          echo "file=$INPUT_FILE" >> "$GITHUB_OUTPUT"
+          echo "version=" >> "$GITHUB_OUTPUT"
+        else
+          echo "file=" >> "$GITHUB_OUTPUT"
+          echo "version=${INPUT_VER:-22}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
       with:
-        node-version: "22"
+        node-version-file: ${{ steps.node-ver.outputs.file }}
+        node-version: ${{ steps.node-ver.outputs.version }}
 
+    # Cache ~/.npm for the global CDK CLI install below. Include any
+    # package-lock.json hash so static-site callers (npm ci later in the
+    # job) invalidate when frontend deps change. Without the hash, an exact
+    # key hit skips the post-run save and the cache freezes forever.
+    # restore-keys still lets a lockfile miss reuse the prior CDK-version
+    # cache (CDK CLI tarball) as a partial hit.
     - name: Cache npm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       with:
         path: ~/.npm
-        key: npm-${{ runner.os }}-cdk-${{ steps.cdk-ver.outputs.version }}
+        key: npm-${{ runner.os }}-cdk-${{ steps.cdk-ver.outputs.version }}-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          npm-${{ runner.os }}-cdk-${{ steps.cdk-ver.outputs.version }}-
 
     - name: Install CDK CLI
       shell: bash

@@ -1,7 +1,5 @@
 name: Backup to S3
 
-# Weekly self-backup. Thin wrapper over the reusable repo-backup workflow —
-# all backup logic lives in repo-backup.yml.
 on:
   schedule:
     - cron: "0 2 * * 0"  # weekly, Sunday 02:00 UTC
@@ -9,12 +7,22 @@ on:
 
 jobs:
   backup:
-    uses: ./.github/workflows/repo-backup.yml
-    secrets: inherit
+    # Forks that keep Actions enabled would otherwise run this weekly and fail
+    # against the upstream role.
+    if: github.repository == 'Specter099/.github'
+    # With restricted default workflow permissions, a reusable workflow's job
+    # requesting id-token: write fails at startup unless the caller job
+    # explicitly grants it - this job wasn't granting anything, so every run
+    # since this workflow started calling repo-backup.yml has failed before
+    # any job was even scheduled.
     permissions:
       id-token: write
       contents: read
+    uses: ./.github/workflows/repo-backup.yml
     with:
-      # BACKUP_S3_BUCKET is a repository-level variable.
       s3-bucket: ${{ vars.BACKUP_S3_BUCKET }}
-      environment: backup
+      environment: production
+    # Pass only what the callee needs, not every secret this repo holds. An
+    # environment secret on the callee's job still takes precedence.
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}

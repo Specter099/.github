@@ -19,6 +19,22 @@ on:
         description: GitHub environment whose secrets contain AWS_ROLE_ARN
         type: string
         default: "backup"
+    secrets:
+      AWS_ROLE_ARN:
+        description: >-
+          IAM role ARN for OIDC federation. Optional: callers migrated to a
+          per-repo OIDC role supply the ARN as an AWS_ROLE_ARN repository
+          VARIABLE instead, which the step below falls back to.
+
+          Declared optional because the declaration should describe what is
+          actually true - a migrated caller has no such secret to pass.
+          Whether GitHub would have ENFORCED `required: true` against a
+          caller using `secrets: inherit` is not settled: the documentation
+          does not say, and reports differ on whether inherit skips
+          required-secret validation and resolves the missing value to an
+          empty string. Optional is correct either way; do not restore
+          `required: true` on the assumption that it was only decorative.
+        required: false
   workflow_dispatch:
     inputs:
       s3-bucket:
@@ -42,55 +58,108 @@ jobs:
   backup:
     name: Backup to S3
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
+    # Snapshot of HEAD only (git archive), so a shallow checkout is enough.
+    # cancel-in-progress: false — never abort a mid-upload backup.
+    concurrency:
+      group: repo-backup-${{ inputs.environment }}-${{ github.repository }}
+      cancel-in-progress: false
     environment: ${{ inputs.environment }}
     permissions:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
       - name: Resolve inputs
         id: vars
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+          PREFIX: ${{ inputs.s3-prefix }}
+          SHA: ${{ github.sha }}
         run: |
-          REPO_NAME="${{ github.event.repository.name }}"
-          PREFIX="${{ inputs.s3-prefix }}"
           if [ -z "$PREFIX" ]; then
             PREFIX="$REPO_NAME"
           fi
           DATE=$(date -u +%Y-%m-%d)
-          SHA="${{ github.sha }}"
           FILENAME="${REPO_NAME}-${DATE}-${SHA:0:7}.zip"
           echo "prefix=$PREFIX" >> "$GITHUB_OUTPUT"
           echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
           echo "s3-key=${PREFIX}/${FILENAME}" >> "$GITHUB_OUTPUT"
 
       - name: Create zip archive
+        env:
+          FILENAME: ${{ steps.vars.outputs.filename }}
         run: |
-          git archive --format=zip --output="${{ steps.vars.outputs.filename }}" HEAD
-          SIZE=$(du -sh "${{ steps.vars.outputs.filename }}" | cut -f1)
+          git archive --format=zip --output="$FILENAME" HEAD
+          SIZE=$(stat -c %s "$FILENAME")
           echo "ARCHIVE_SIZE=$SIZE" >> "$GITHUB_ENV"
 
+      # Now that the secret is optional, "neither is set" is a reachable
+      # misconfiguration - a caller that deleted its secret before its
+      # AWS_ROLE_ARN variable existed. Without this the run dies inside
+      # configure-aws-credentials on an empty role, which reads like an AWS
+      # permissions problem rather than a missing input.
+      - name: Verify a role ARN is available
+        env:
+          ROLE_ARN: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo "::error::No AWS_ROLE_ARN available. Set it as a repository variable in the calling repo (per-repo OIDC role), or as a secret it passes via 'secrets: inherit'." >&2
+            exit 1
+          fi
+
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4.3.1
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          # Secret first, variable second. `secrets` and `vars` are separate
+          # contexts with no precedence between them - the ordering in this
+          # `||` is the ONLY thing that makes the secret win, so do not
+          # reorder it. That ordering is what preserves today's behaviour
+          # exactly for every caller that still has a secret, while letting
+          # a caller migrate on its own schedule: deleting its AWS_ROLE_ARN
+          # secret is what switches it to its per-repo role. No flag day,
+          # and re-adding the secret reverts it.
+          #
+          # "Deleting its secret" means at EVERY scope. This job binds to an
+          # environment, and an environment secret shadows a repository
+          # secret of the same name, so a caller holding both that deletes
+          # only the repository one keeps running on the old shared role -
+          # green, and not migrated.
+          #
+          # `vars` here resolves against the CALLER's repository, not this
+          # one: "For reusable workflows, the variables from the caller
+          # workflow's repository are used."
+          # https://docs.github.com/en/actions/reference/workflows-and-actions/variables
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Upload to S3
+        env:
+          FILENAME: ${{ steps.vars.outputs.filename }}
+          S3_BUCKET: ${{ inputs.s3-bucket }}
+          S3_KEY: ${{ steps.vars.outputs.s3-key }}
         run: |
-          aws s3 cp "${{ steps.vars.outputs.filename }}" \
-            "s3://${{ inputs.s3-bucket }}/${{ steps.vars.outputs.s3-key }}"
+          aws s3 cp "$FILENAME" "s3://${S3_BUCKET}/${S3_KEY}"
 
       - name: Write job summary
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          FILENAME: ${{ steps.vars.outputs.filename }}
+          S3_BUCKET: ${{ inputs.s3-bucket }}
+          S3_KEY: ${{ steps.vars.outputs.s3-key }}
         run: |
-          echo "## Repo Backup" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Repository | \`${{ github.repository }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Archive | \`${{ steps.vars.outputs.filename }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Size | $ARCHIVE_SIZE |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| S3 URI | \`s3://${{ inputs.s3-bucket }}/${{ steps.vars.outputs.s3-key }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Repo Backup"
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Repository | \`${REPOSITORY}\` |"
+            echo "| Commit | \`${SHA}\` |"
+            echo "| Archive | \`${FILENAME}\` |"
+            echo "| Size | $ARCHIVE_SIZE |"
+            echo "| S3 URI | \`s3://${S3_BUCKET}/${S3_KEY}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,45 @@
+name: Generate CI Log Metadata
+description: >
+  Write a metadata.json describing this workflow run into the CI log
+  directory, for ship-logs to upload alongside the step logs.
+
+inputs:
+  log-dir:
+    description: Directory to write metadata.json into (created if absent)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Generate log metadata
+      shell: bash
+      env:
+        LOG_DIR: ${{ inputs.log-dir }}
+        META_REPOSITORY: ${{ github.repository }}
+        META_WORKFLOW: ${{ github.workflow }}
+        META_RUN_ID: ${{ github.run_id }}
+        META_RUN_ATTEMPT: ${{ github.run_attempt }}
+        META_REF: ${{ github.ref }}
+        META_SHA: ${{ github.sha }}
+        META_ACTOR: ${{ github.actor }}
+        META_EVENT: ${{ github.event_name }}
+        META_JOB_STATUS: ${{ job.status }}
+      run: |
+        mkdir -p "$LOG_DIR"
+        python3 -c "
+        import json, os, datetime
+        meta = {
+            'repository': os.environ['META_REPOSITORY'],
+            'workflow': os.environ['META_WORKFLOW'],
+            'run_id': os.environ['META_RUN_ID'],
+            'run_attempt': os.environ['META_RUN_ATTEMPT'],
+            'ref': os.environ['META_REF'],
+            'sha': os.environ['META_SHA'],
+            'actor': os.environ['META_ACTOR'],
+            'event': os.environ['META_EVENT'],
+            'job_status': os.environ['META_JOB_STATUS'],
+            'timestamp': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        }
+        with open(os.path.join(os.environ['LOG_DIR'], 'metadata.json'), 'w') as f:
+            json.dump(meta, f, indent=2)
+        "
