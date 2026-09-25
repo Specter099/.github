@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, NoCredentialsError
 
 import check_no_public_access as cnpa
 
@@ -87,6 +87,34 @@ class TestExtractPolicies:
         }
         assert cnpa.extract_policies(template) == ([], [])
 
+    def test_efs_filesystem_policy(self):
+        template = {
+            "Resources": {
+                "FS": {
+                    "Type": "AWS::EFS::FileSystem",
+                    "Properties": {"FileSystemPolicy": {"Version": "2012-10-17"}},
+                }
+            }
+        }
+        policies, _ = cnpa.extract_policies(template)
+        assert policies == [("FS", "AWS::EFS::FileSystem", {"Version": "2012-10-17"})]
+
+    def test_nested_dynamodb_resource_policy(self):
+        doc = {"Version": "2012-10-17"}
+        template = {
+            "Resources": {
+                "T": {
+                    "Type": "AWS::DynamoDB::Table",
+                    "Properties": {"ResourcePolicy": {"PolicyDocument": doc}},
+                },
+                # A table without a resource policy is simply not checked.
+                "Plain": {"Type": "AWS::DynamoDB::Table", "Properties": {}},
+            }
+        }
+        policies, errors = cnpa.extract_policies(template)
+        assert policies == [("T", "AWS::DynamoDB::Table", doc)]
+        assert errors == []
+
     def test_unknown_type_skipped(self):
         template = {"Resources": {"Fn": {"Type": "AWS::Lambda::Function"}}}
         assert cnpa.extract_policies(template) == ([], [])
@@ -153,6 +181,18 @@ class TestCheckPolicy:
         )
         assert r["public"] is False
         assert "ValidationException" in r["error"]
+
+    def test_botocore_error_captured(self):
+        # No credentials must be an incomplete scan, not a traceback.
+        r = cnpa.check_policy(
+            FakeClient(raises=NoCredentialsError()),
+            "R",
+            "AWS::S3::Bucket",
+            {},
+            FAKE_CTX,
+        )
+        assert r["public"] is False
+        assert "NoCredentialsError" in r["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +281,22 @@ class TestMain:
         monkeypatch.setattr(
             cnpa.boto3, "client", fake_boto3_client(FakeClient(raises=err))
         )
+        monkeypatch.setattr("sys.argv", ["prog", "--template-dir", str(tmp_path)])
+        assert cnpa.main() == 2
+
+    def test_no_credentials_exits_two(self, tmp_path, monkeypatch):
+        self._template(tmp_path)
+
+        class NoCredsSts:
+            def get_caller_identity(self):
+                raise NoCredentialsError()
+
+        def _client(service_name, *args, **kwargs):
+            if service_name == "sts":
+                return NoCredsSts()
+            return FakeClient(raises=NoCredentialsError())
+
+        monkeypatch.setattr(cnpa.boto3, "client", _client)
         monkeypatch.setattr("sys.argv", ["prog", "--template-dir", str(tmp_path)])
         assert cnpa.main() == 2
 

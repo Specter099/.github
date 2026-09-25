@@ -14,7 +14,29 @@ Reusable workflows and composite actions for CDK projects.
 | `python-ci` | Workflow | PR check for any pure Python project |
 | `setup-cdk` | Action | Composite action — install Python/Node/CDK |
 
-> **Required secret:** All workflows assume `AWS_ROLE_ARN` is set on the calling repo's `production` environment (or the environment passed via `environment` input).
+> **AWS role:** Every AWS workflow reads `AWS_ROLE_ARN` from a secret or, failing that, a variable, on the calling repo or its `production` environment (or the environment passed via the `environment` input). A secret wins when both exist. If neither is set, the job fails with a clear error. The one exception is `cdk-review` with `require-aws: false`.
+
+---
+
+## Saving CI minutes
+
+The reusable **check** workflows (`cdk-review`, `static-site-review`, `python-ci`, `gitleaks`, `validate-bucket-names`, `access-analyzer-check`) skip Dependabot PRs on the job (`if: ${{ github.actor != 'dependabot[bot]' }}`). A skipped required status check is treated as passing, so merge is not blocked. Deploy and backup workflows are not skipped — those run after merge.
+
+Reusable `workflow_call` targets cannot filter paths. Add this to every caller PR workflow so docs-only PRs don't pay for synth, npm, or Access Analyzer:
+
+```yaml
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
+```
+
+`scripts/check_workflow_invariants.py` enforces both conventions when run against a caller (`WF015` skip-Dependabot, `WF016` paths-ignore). `self-test.yml` in this repo already has both.
+
+Static-site repos that bundle arm64 Docker/Lambda assets must pass `enable-docker-bundling: true` to `static-site-deploy`; the default is `false` so pure S3/CloudFront sites skip QEMU/Buildx setup.
 
 ---
 
@@ -30,6 +52,7 @@ Lints, unit tests, and dependency-audits a CDK Python project, then runs `cdk sy
 |-------|----------|---------|-------------|
 | `aws-region` | no | `us-east-1` | AWS region |
 | `cdk-version` | no | `2.1106.1` | CDK CLI version |
+| `require-aws` | no | `true` | Fail when no `AWS_ROLE_ARN` is available. Set `false` only for repos with no AWS access; synth/diff/Nag/Access Analyzer are then skipped |
 | `smoke-test-url` | no | `""` | Unused — accepted for interface parity with deploy |
 
 **Usage**
@@ -144,7 +167,7 @@ Archives the repo at HEAD with `git archive`, uploads a timestamped zip (`<repo>
 | `s3-bucket` | **yes** | — | S3 bucket name |
 | `s3-prefix` | no | repo name | Key prefix (folder) within the bucket |
 | `aws-region` | no | `us-east-1` | AWS region of the bucket |
-| `environment` | no | `production` | GitHub environment with `AWS_ROLE_ARN` secret |
+| `environment` | no | `backup` | GitHub environment with `AWS_ROLE_ARN` secret |
 
 **Usage**
 
@@ -172,7 +195,7 @@ Lints, format-checks, and secret-scans a pure Python project, then runs pytest. 
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `python-version` | no | `"3.12"` | Python version |
+| `python-versions` | no | `'["3.12"]'` | JSON array of Python versions for the matrix |
 | `requirements-path` | no | `"requirements-dev.txt"` | Path to dev requirements file |
 | `tests-dir` | no | `"tests/"` | Directory passed to pytest |
 
@@ -183,12 +206,12 @@ jobs:
   ci:
     uses: Specter099/.github/.github/workflows/python-ci.yml@main
     with:
-      python-version: "3.12"                   # optional
+      python-versions: '["3.12"]'            # optional
       requirements-path: requirements-dev.txt  # optional
       tests-dir: tests/                        # optional
 ```
 
-> **Note:** gitleaks scans the full git history. `GITHUB_TOKEN` is injected automatically by GitHub Actions — no secrets configuration needed.
+> **Note:** gitleaks scans the full git history once per run (on the first matrix version). `GITHUB_TOKEN` is injected automatically. Organization-owned repos beyond gitleaks' free tier can pass an optional `GITLEAKS_LICENSE` secret (also accepted by `gitleaks.yml`).
 
 ---
 
@@ -260,7 +283,8 @@ caller repo, which is where trigger-convention violations tend to live.
 that no off-the-shelf linter knows about — undeclared `workflow_call` secrets,
 unpinned internal actions, `pull_request_target`, script injection into `run:`,
 checks leaking into deploy workflows, README examples passing inputs that don't
-exist. `--list-checks` prints all of them.
+exist, Dependabot skips on check jobs, and `paths-ignore` on PR triggers.
+`--list-checks` prints all of them.
 
 Findings that predate the checker are accepted in
 `.github/workflow-invariants-baseline.yml`. That file is a **work list, not a

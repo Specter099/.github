@@ -22,23 +22,27 @@ on:
 jobs:
   validate-bucket-names:
     name: S3 Bucket Naming Convention
+    # Skip Dependabot PRs — they don't introduce new bucket_name= kwargs.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
       group: validate-bucket-names-${{ github.ref }}
       cancel-in-progress: true
+    # Read-only: violations are reported in the job log, which names every
+    # file and line. (A PR comment used to repeat a fixed template on every
+    # failing push and needed pull-requests: write for it.)
     permissions:
       contents: read
-      pull-requests: write
 
     steps:
       - name: Checkout caller repo
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - name: Checkout .github repo (for shared scripts)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: Specter099/.github
           path: .shared-github
@@ -50,12 +54,11 @@ jobs:
           persist-credentials: false
 
       - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ inputs.python-version }}
 
       - name: Validate S3 bucket names
-        id: validate
         env:
           SCAN_PATH: ${{ inputs.scan-path }}
           TEMPLATE_DIR: ${{ inputs.template-dir }}
@@ -64,34 +67,3 @@ jobs:
           [ -n "$SCAN_PATH" ]    && args+=(--path "$SCAN_PATH")
           [ -n "$TEMPLATE_DIR" ] && args+=(--template-dir "$TEMPLATE_DIR")
           python .shared-github/scripts/validate_bucket_names.py "${args[@]}"
-
-      - name: Comment on PR (violations only)
-        if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
-        with:
-          script: |
-            const output = `### S3 Bucket Naming Violations
-
-            One or more S3 \`bucket_name=\` values in this PR do not conform
-            to the required convention:
-
-            \`\`\`
-            {prefix}-{12-digit-account-id}-{aws-region}-an
-            \`\`\`
-
-            **Example:** \`bitwarden-logs-123456789012-us-east-1-an\`
-
-            Run the script locally to see exactly which files and lines need
-            to be updated:
-
-            \`\`\`bash
-            python scripts/validate_bucket_names.py --path .
-            \`\`\`
-            `;
-
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: output
-            });

@@ -1,4 +1,3 @@
----
 name: Python CI
 # Requires callers to include ruff and pytest in their requirements file.
 # Install via requirements-path (default) or override with install-command.
@@ -6,7 +5,7 @@ name: Python CI
 # Concurrency is handled by this workflow's own job — callers don't need to
 # set it themselves.
 
-"on":
+on:
   workflow_call:
     inputs:
       python-versions:
@@ -79,12 +78,22 @@ name: Python CI
     secrets:
       AWS_ROLE_ARN:
         description: >-
-          IAM role ARN for OIDC federation (required when enable-ci-logs is true)
+          IAM role ARN for OIDC federation (needed when enable-ci-logs is
+          true). An AWS_ROLE_ARN repository variable works too.
+        required: false
+      GITLEAKS_LICENSE:
+        description: >-
+          gitleaks-action licence key. Only needed for organization-owned
+          repositories beyond gitleaks' free tier.
         required: false
 
 jobs:
   ci:
     name: "Lint, Secrets & Test (py${{ matrix.python-version }})"
+    # Skip Dependabot PRs. A skipped required check is treated as passing
+    # by branch protection. The group key includes the matrix version so
+    # legs don't cancel each other.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 12
     concurrency:
@@ -100,14 +109,14 @@ jobs:
       # accessible by integration").
       pull-requests: read
     env:
-      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
     strategy:
       fail-fast: false
       matrix:
         python-version: ${{ fromJson(inputs.python-versions) }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0  # full history required by gitleaks
           persist-credentials: false
@@ -117,10 +126,11 @@ jobs:
         run: mkdir -p "$RUNNER_TEMP/ci-logs"
 
       - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'pip'
+          cache: pip
+          cache-dependency-path: ${{ inputs.requirements-path }}
 
       - name: Install dev dependencies
         env:
@@ -161,10 +171,13 @@ jobs:
             ruff format --check .
           fi
 
+      # History is the same on every matrix leg, so scan it once.
       - name: Secrets scan (gitleaks)
+        if: ${{ matrix.python-version == fromJson(inputs.python-versions)[0] }}
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e  # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
       - name: Dependency audit (pip-audit)
         if: ${{ inputs.pip-audit }}
@@ -172,7 +185,7 @@ jobs:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
-          pip install pip-audit
+          pip install pip-audit==2.10.1
           if [ "$ENABLE_LOGS" = "true" ]; then
             pip-audit 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
           else
@@ -185,7 +198,7 @@ jobs:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
-          pip install bandit
+          pip install bandit==1.9.4
           if [ "$ENABLE_LOGS" = "true" ]; then
             bandit -r . -ll --exclude .venv,cdk.out 2>&1 | tee "$RUNNER_TEMP/ci-logs/bandit.log"
           else
@@ -213,7 +226,7 @@ jobs:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
-          pip install pytest-cov
+          pip install pytest-cov==7.1.0
           if [ "$ENABLE_LOGS" = "true" ]; then
             pytest "$TESTS_DIR" -v \
               --cov \
@@ -228,13 +241,14 @@ jobs:
 
       - name: Log shipping skipped (no AWS_ROLE_ARN)
         if: always() && inputs.enable-ci-logs && env.AWS_ROLE_ARN == ''
-        run: echo "::warning::AWS_ROLE_ARN secret not set — skipping CI log shipping"
+        run: echo "::warning::AWS_ROLE_ARN not set (secret or variable) — skipping CI log shipping"
 
       - name: Configure AWS credentials for logging
         if: always() && inputs.enable-ci-logs && env.AWS_ROLE_ARN != ''
-        uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d  # v6.2.2
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
           aws-region: ${{ inputs.aws-region }}
 
       - name: Generate log metadata
@@ -251,4 +265,6 @@ jobs:
           destination: ${{ inputs.ci-log-destination }}
           s3-bucket: ${{ inputs.ci-log-s3-bucket != '' && inputs.ci-log-s3-bucket || vars.CI_LOGS_BUCKET }}
           cloudwatch-log-group: ${{ inputs.ci-log-cloudwatch-group != '' && inputs.ci-log-cloudwatch-group || vars.CI_LOGS_LOG_GROUP }}
+          # Matrix legs share a run ID; without this they overwrite each other.
+          key-suffix: py${{ matrix.python-version }}
           aws-region: ${{ inputs.aws-region }}

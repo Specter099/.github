@@ -6,10 +6,19 @@ name: Self Test
 on:
   pull_request:
     branches: [main]
+    # Docs/license-only PRs don't touch YAML or Python — skip the gate.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE"
 
 jobs:
   test:
     name: Lint & Test
+    # Dependabot here only bumps SHA-pinned actions. yamllint/pytest/invariants
+    # don't change with a SHA swap, so don't spend runner minutes on it.
+    # A skipped required check is treated as passing by branch protection.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 8
     concurrency:
@@ -18,12 +27,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -31,6 +40,18 @@ jobs:
 
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
+
+      # local-ci.sh `go install`s actionlint when it isn't on PATH. Cache the
+      # binary so that is a one-off rather than a compile on every run. The
+      # pinned version lives in local-ci.sh, so key on that file.
+      - name: Cache actionlint
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/go/bin/actionlint
+          key: actionlint-${{ runner.os }}-${{ hashFiles('scripts/local-ci.sh') }}
+
+      - name: Put Go binaries on PATH
+        run: echo "$HOME/go/bin" >> "$GITHUB_PATH"
 
       # Single entrypoint shared with local development, so that a green
       # `./scripts/local-ci.sh` on a laptop means a green check here. Stages:

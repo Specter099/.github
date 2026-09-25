@@ -2,10 +2,18 @@ name: Gitleaks
 
 on:
   workflow_call:
+    secrets:
+      GITLEAKS_LICENSE:
+        description: >-
+          gitleaks-action licence key. Only needed for organization-owned
+          repositories beyond gitleaks' free tier.
+        required: false
 
 jobs:
   gitleaks:
     name: Secret Scan
+    # Skip Dependabot PRs — they don't introduce new secret material.
+    if: ${{ github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -15,7 +23,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -24,3 +32,4 @@ jobs:
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e  # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
