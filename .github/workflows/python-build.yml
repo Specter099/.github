@@ -1,30 +1,39 @@
-name: Python Publish
+name: Python Build
 
-# Test, build and publish a Python package to PyPI via Trusted Publisher
-# (OIDC, no API token). Call it from a release workflow:
+# Test and build a Python package, then upload the distribution as the `dist`
+# artifact. This workflow deliberately does NOT publish.
+#
+# PyPI Trusted Publishing verifies the job_workflow_ref OIDC claim, which for a
+# job inside a reusable workflow names THIS file, not the caller's. The
+# publishing job must therefore live in the caller's own workflow file (the one
+# registered as the Trusted Publisher). Call it like this:
 #
 #   on:
 #     release:
 #       types: [published]
 #   jobs:
-#     publish:
-#       uses: Specter099/.github/.github/workflows/python-publish.yml@main
+#     build:
+#       uses: Specter099/.github/.github/workflows/python-build.yml@main
 #       permissions:
 #         contents: read
+#     publish:
+#       needs: build
+#       runs-on: ubuntu-latest
+#       environment:
+#         name: pypi
+#         url: https://pypi.org/project/ssmtree/
+#       permissions:
 #         id-token: write
-#       with:
-#         package-name: ssmtree
-#
-# The PyPI project must list the caller repo and the `pypi` environment as a
-# Trusted Publisher. The trusted-publisher claim names the CALLER workflow.
+#       steps:
+#         - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+#           with:
+#             name: dist
+#             path: dist/
+#         - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
 
 on:
   workflow_call:
     inputs:
-      package-name:
-        description: PyPI project name (used for the environment URL)
-        type: string
-        required: true
       python-versions:
         description: JSON array of Python versions for the test matrix
         type: string
@@ -45,10 +54,6 @@ on:
           interpreted. Lint and type checks belong in CI, not here.
         type: string
         default: "pytest"
-      environment:
-        description: GitHub environment that holds the PyPI trusted publisher
-        type: string
-        default: pypi
 
 jobs:
   test:
@@ -112,23 +117,3 @@ jobs:
         with:
           name: dist
           path: dist/
-
-  publish:
-    name: Publish to PyPI
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    environment:
-      name: ${{ inputs.environment }}
-      url: https://pypi.org/project/${{ inputs.package-name }}/
-    permissions:
-      id-token: write  # OIDC trusted publisher
-    steps:
-      - name: Download dist artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
