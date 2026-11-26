@@ -47,6 +47,9 @@ pytest tests/ -v
     static-site-review.yml    # PR check: frontend + CDK infra
     static-site-deploy.yml    # Build frontend + deploy CDK
     python-ci.yml             # Lint (ruff), format, gitleaks, pytest
+    python-publish.yml        # Test, build, publish to PyPI (Trusted Publisher)
+    stale.yml                 # Mark and close inactive issues and PRs
+    verify-oidc.yml           # Inert check: caller assumes its own AWS role
     repo-backup.yml           # Archive repo to S3 (reusable)
     backup.yml                # Weekly self-backup (schedule: Sunday 02:00 UTC)
     access-analyzer-check.yml # IAM Access Analyzer public access check
@@ -60,6 +63,7 @@ pytest tests/ -v
     log-metadata/action.yml   # Composite: write run metadata.json for ship-logs
   dependabot.yml              # Weekly bumps for SHA-pinned actions
   PULL_REQUEST_TEMPLATE.md    # Org-wide default PR template (applies to any repo without its own)
+  SECURITY.md, CODE_OF_CONDUCT.md, CONTRIBUTING.md, ISSUE_TEMPLATE/  # Account-wide defaults (repo must be public)
   workflow-invariants-baseline.yml  # Accepted (pre-existing) invariant findings — a work list
 scripts/
   local-ci.sh                 # The pre-commit gate. Same stages as self-test.yml

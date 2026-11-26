@@ -1,0 +1,134 @@
+name: Python Publish
+
+# Test, build and publish a Python package to PyPI via Trusted Publisher
+# (OIDC, no API token). Call it from a release workflow:
+#
+#   on:
+#     release:
+#       types: [published]
+#   jobs:
+#     publish:
+#       uses: Specter099/.github/.github/workflows/python-publish.yml@main
+#       permissions:
+#         contents: read
+#         id-token: write
+#       with:
+#         package-name: ssmtree
+#
+# The PyPI project must list the caller repo and the `pypi` environment as a
+# Trusted Publisher. The trusted-publisher claim names the CALLER workflow.
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        description: PyPI project name (used for the environment URL)
+        type: string
+        required: true
+      python-versions:
+        description: JSON array of Python versions for the test matrix
+        type: string
+        default: '["3.11","3.12"]'
+      build-python-version:
+        description: Python version used to build the distribution
+        type: string
+        default: "3.12"
+      install-command:
+        description: >-
+          Single install command for test dependencies. Shell operators are
+          not interpreted.
+        type: string
+        default: 'pip install -e .[dev]'
+      test-command:
+        description: >-
+          Single test command, run after install. Shell operators are not
+          interpreted. Lint and type checks belong in CI, not here.
+        type: string
+        default: "pytest"
+      environment:
+        description: GitHub environment that holds the PyPI trusted publisher
+        type: string
+        default: pypi
+
+jobs:
+  test:
+    name: "Test (py${{ matrix.python-version }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJson(inputs.python-versions) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        env:
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: |
+          pip install --upgrade pip
+          set -f
+          $INSTALL_COMMAND
+
+      - name: Test
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: |
+          set -f
+          $TEST_COMMAND
+
+  build:
+    name: Build distribution
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ inputs.build-python-version }}
+
+      - name: Build sdist and wheel
+        run: |
+          pip install build
+          python -m build
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment:
+      name: ${{ inputs.environment }}
+      url: https://pypi.org/project/${{ inputs.package-name }}/
+    permissions:
+      id-token: write  # OIDC trusted publisher
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1

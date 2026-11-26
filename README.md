@@ -220,6 +220,86 @@ jobs:
 
 ---
 
+### `python-publish.yml`
+
+Tests, builds and publishes a Python package to PyPI through Trusted Publisher (OIDC, no token). The caller must grant `id-token: write`, and the PyPI project must trust the caller repo and the `pypi` environment.
+
+**Inputs**
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `package-name` | yes | | PyPI project name |
+| `python-versions` | no | `'["3.11","3.12"]'` | JSON array for the test matrix |
+| `build-python-version` | no | `"3.12"` | Python used to build |
+| `install-command` | no | `pip install -e .[dev]` | Single install command |
+| `test-command` | no | `pytest` | Single test command |
+| `environment` | no | `pypi` | GitHub environment holding the trusted publisher |
+
+```yaml
+on:
+  release:
+    types: [published]
+jobs:
+  publish:
+    uses: Specter099/.github/.github/workflows/python-publish.yml@main
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      package-name: ssmtree
+```
+
+### `stale.yml`
+
+Marks and closes inactive issues and PRs. Call it from a `schedule` trigger; the caller must grant `issues: write` and `pull-requests: write`.
+
+**Inputs**
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `days-before-issue-stale` | no | `60` | Days before an issue is marked stale |
+| `days-before-pr-stale` | no | `30` | Days before a PR is marked stale |
+| `days-before-close` | no | `14` | Days after the stale label before closing |
+| `exempt-labels` | no | `"pinned,security"` | Labels that exempt issues and PRs |
+
+```yaml
+jobs:
+  stale:
+    uses: Specter099/.github/.github/workflows/stale.yml@main
+    permissions:
+      issues: write
+      pull-requests: write
+```
+
+### `verify-oidc.yml`
+
+Inert check that the caller assumes its own per-repo AWS role: it runs `sts:GetCallerIdentity` and prints the `assumedRoleId` to the job summary. Compare that value with `aws iam get-role`; a green check alone proves nothing.
+
+**Inputs**
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `expected-role-name` | yes | | Role name to compare against in the summary |
+| `aws-region` | no | `us-east-1` | AWS region |
+| `environment` | no | `production` | GitHub environment, so the token subject matches a deploy |
+
+```yaml
+on:
+  workflow_dispatch:
+jobs:
+  verify:
+    uses: Specter099/.github/.github/workflows/verify-oidc.yml@main
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      expected-role-name: github-actions-my-repo
+```
+
+> **Access Analyzer:** the per-repo `security.yml` copies that run CDK synth plus Access Analyzer are covered by `access-analyzer-check.yml` and `cdk-review.yml`; migrate callers to those instead of adding another workflow.
+
+---
+
 ## Local development
 
 Run the gate before committing. It executes the same stages as
