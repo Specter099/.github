@@ -47,7 +47,7 @@ pytest tests/ -v
     static-site-review.yml    # PR check: frontend + CDK infra
     static-site-deploy.yml    # Build frontend + deploy CDK
     python-ci.yml             # Lint (ruff), format, gitleaks, pytest
-    python-publish.yml        # Test, build, publish to PyPI (Trusted Publisher)
+    python-build.yml          # Test + build for PyPI (publish job stays in caller: Trusted Publisher)
     stale.yml                 # Mark and close inactive issues and PRs
     verify-oidc.yml           # Inert check: caller assumes its own AWS role
     repo-backup.yml           # Archive repo to S3 (reusable)
