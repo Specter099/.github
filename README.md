@@ -242,21 +242,9 @@ jobs:
     uses: Specter099/.github/.github/workflows/python-build.yml@main
     permissions:
       contents: read
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/ssmtree/
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
-        with:
-          name: dist
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
 ```
+
+Then add a `publish` job in the same caller file (`needs: build`, `environment: pypi`, `permissions: id-token: write`) that downloads the `dist` artifact and runs `pypa/gh-action-pypi-publish`. A complete example is in the header comment of `python-build.yml`.
 
 ### `stale.yml`
 
