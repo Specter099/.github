@@ -1,0 +1,102 @@
+name: Verify OIDC
+
+# Proves the calling repository authenticates to AWS as its OWN per-repo role.
+# Deliberately inert: assume the role, call sts:GetCallerIdentity, print the
+# answer, stop. No checkout, no build, no deploy, no AWS mutation.
+#
+#   on:
+#     workflow_dispatch:
+#   jobs:
+#     verify:
+#       uses: Specter099/.github/.github/workflows/verify-oidc.yml@main
+#       permissions:
+#         id-token: write
+#         contents: read
+#       with:
+#         expected-role-name: github-actions-my-repo
+#
+# A green check proves nothing on its own. The evidence is the assumedRoleId
+# (AROA...) in the job summary, which must equal:
+#   aws iam get-role --role-name <role> --query Role.RoleId
+
+on:
+  workflow_call:
+    inputs:
+      expected-role-name:
+        description: Role name shown in the summary as the one to compare against
+        type: string
+        required: true
+      aws-region:
+        description: AWS region
+        type: string
+        default: us-east-1
+      environment:
+        description: >-
+          GitHub environment to run in, so the OIDC token subject matches what
+          a real deploy produces
+        type: string
+        default: production
+    secrets:
+      AWS_ROLE_ARN:
+        description: >-
+          IAM role ARN for OIDC federation. An AWS_ROLE_ARN repository or
+          environment variable works too.
+        required: false
+
+jobs:
+  verify:
+    name: Verify OIDC role assumption
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+    steps:
+      - name: Require a role ARN
+        run: |
+          if [ -z "$AWS_ROLE_ARN" ]; then
+            echo "::error::AWS_ROLE_ARN is not set (secret or variable)"
+            exit 1
+          fi
+
+      # No actions/checkout on purpose: no repository contents are needed.
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd  # v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Print caller identity
+        env:
+          EXPECTED_ROLE: ${{ inputs.expected-role-name }}
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --output json | tee identity.json
+          account=$(jq -r '.Account' identity.json)
+          arn=$(jq -r '.Arn' identity.json)
+          user_id=$(jq -r '.UserId' identity.json)
+          # UserId is "<RoleId>:<sessionName>"; the RoleId (AROA...) is the
+          # unforgeable identifier of WHICH role was assumed. The role ARN
+          # comes from a secret and renders as *** in logs.
+          assumed_role_id="${user_id%%:*}"
+          {
+            echo "## OIDC verification"
+            echo
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| account | \`$account\` |"
+            echo "| assumedRoleId | \`$assumed_role_id\` |"
+            echo "| arn | \`$arn\` |"
+            echo
+            echo "Expected \`assumedRoleId\` for \`$EXPECTED_ROLE\`:"
+            echo
+            echo '```'
+            echo "aws iam get-role --role-name $EXPECTED_ROLE --query Role.RoleId"
+            echo '```'
+            echo
+            echo "A green check is not proof. Compare the AROA strings."
+          } >> "$GITHUB_STEP_SUMMARY"
