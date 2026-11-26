@@ -31,6 +31,19 @@ on:
         description: Directory to run pytest against
         type: string
         default: "tests/"
+      lint-paths:
+        description: >-
+          Space-separated paths for ruff check and ruff format --check
+          (e.g. "src tests"). Globs are not expanded.
+        type: string
+        default: "."
+      mypy-command:
+        description: >-
+          Single mypy command to run after lint (e.g. "mypy src"). Empty
+          skips the step. The caller's dev dependencies must provide mypy.
+          Shell operators are not interpreted.
+        type: string
+        default: ""
       coverage:
         description: Enable pytest-cov coverage reporting
         type: boolean
@@ -41,10 +54,23 @@ on:
           (only used when coverage is true)
         type: number
         default: 80
+      coverage-source:
+        description: >-
+          Package or path measured by pytest-cov (passed as --cov=<value>).
+          Empty measures everything pytest-cov finds (plain --cov).
+        type: string
+        default: ""
       pip-audit:
         description: Run pip-audit dependency vulnerability scan
         type: boolean
         default: false
+      pip-audit-args:
+        description: >-
+          Extra arguments for pip-audit (e.g. "--ignore-vuln CVE-2026-3219").
+          Only used when pip-audit is true. Shell operators are not
+          interpreted.
+        type: string
+        default: ""
       bandit:
         description: Run bandit SAST scan (medium+ severity)
         type: boolean
@@ -152,23 +178,41 @@ jobs:
       - name: Lint (ruff)
         env:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+          LINT_PATHS: ${{ inputs.lint-paths }}
         run: |
           set -o pipefail
+          set -f  # unquoted $LINT_PATHS word-splits but never globs
           if [ "$ENABLE_LOGS" = "true" ]; then
-            ruff check . 2>&1 | tee "$RUNNER_TEMP/ci-logs/ruff-check.log"
+            ruff check $LINT_PATHS 2>&1 | tee "$RUNNER_TEMP/ci-logs/ruff-check.log"
           else
-            ruff check .
+            ruff check $LINT_PATHS
           fi
 
       - name: Format check (ruff)
         env:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+          LINT_PATHS: ${{ inputs.lint-paths }}
         run: |
           set -o pipefail
+          set -f
           if [ "$ENABLE_LOGS" = "true" ]; then
-            ruff format --check . 2>&1 | tee "$RUNNER_TEMP/ci-logs/ruff-format.log"
+            ruff format --check $LINT_PATHS 2>&1 | tee "$RUNNER_TEMP/ci-logs/ruff-format.log"
           else
-            ruff format --check .
+            ruff format --check $LINT_PATHS
+          fi
+
+      - name: Type check (mypy)
+        if: ${{ inputs.mypy-command != '' }}
+        env:
+          ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+          MYPY_COMMAND: ${{ inputs.mypy-command }}
+        run: |
+          set -o pipefail
+          set -f
+          if [ "$ENABLE_LOGS" = "true" ]; then
+            $MYPY_COMMAND 2>&1 | tee "$RUNNER_TEMP/ci-logs/mypy.log"
+          else
+            $MYPY_COMMAND
           fi
 
       # History is the same on every matrix leg, so scan it once.
@@ -183,13 +227,15 @@ jobs:
         if: ${{ inputs.pip-audit }}
         env:
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
+          PIP_AUDIT_ARGS: ${{ inputs.pip-audit-args }}
         run: |
           set -o pipefail
           pip install pip-audit==2.10.1
+          set -f
           if [ "$ENABLE_LOGS" = "true" ]; then
-            pip-audit 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
+            pip-audit $PIP_AUDIT_ARGS 2>&1 | tee "$RUNNER_TEMP/ci-logs/pip-audit.log"
           else
-            pip-audit
+            pip-audit $PIP_AUDIT_ARGS
           fi
 
       - name: SAST scan (bandit)
@@ -223,18 +269,21 @@ jobs:
         env:
           TESTS_DIR: ${{ inputs.tests-dir }}
           COV_THRESHOLD: ${{ inputs.coverage-threshold }}
+          COV_SOURCE: ${{ inputs.coverage-source }}
           ENABLE_LOGS: ${{ inputs.enable-ci-logs }}
         run: |
           set -o pipefail
           pip install pytest-cov==7.1.0
+          COV_ARG="--cov"
+          if [ -n "$COV_SOURCE" ]; then COV_ARG="--cov=$COV_SOURCE"; fi
           if [ "$ENABLE_LOGS" = "true" ]; then
             pytest "$TESTS_DIR" -v \
-              --cov \
+              "$COV_ARG" \
               --cov-report=term-missing \
               --cov-fail-under="$COV_THRESHOLD" 2>&1 | tee "$RUNNER_TEMP/ci-logs/pytest-cov.log"
           else
             pytest "$TESTS_DIR" -v \
-              --cov \
+              "$COV_ARG" \
               --cov-report=term-missing \
               --cov-fail-under="$COV_THRESHOLD"
           fi

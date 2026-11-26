@@ -203,6 +203,10 @@ Lints, format-checks, and secret-scans a pure Python project, then runs pytest. 
 | `python-versions` | no | `'["3.12"]'` | JSON array of Python versions for the matrix |
 | `requirements-path` | no | `"requirements-dev.txt"` | Path to dev requirements file |
 | `tests-dir` | no | `"tests/"` | Directory passed to pytest |
+| `lint-paths` | no | `"."` | Space-separated paths for `ruff check` and `ruff format --check` (e.g. `"src tests"`) |
+| `mypy-command` | no | `""` | Single mypy command (e.g. `"mypy src"`), run after lint. Empty skips it. Caller's dev dependencies must provide mypy |
+| `pip-audit-args` | no | `""` | Extra pip-audit arguments (e.g. `"--ignore-vuln CVE-2026-3219"`); used when `pip-audit` is true |
+| `coverage-source` | no | `""` | Package measured by pytest-cov (`--cov=<value>`); empty means plain `--cov` |
 
 **Usage**
 
