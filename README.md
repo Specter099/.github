@@ -220,34 +220,31 @@ jobs:
 
 ---
 
-### `python-publish.yml`
+### `python-build.yml`
 
-Tests, builds and publishes a Python package to PyPI through Trusted Publisher (OIDC, no token). The caller must grant `id-token: write`, and the PyPI project must trust the caller repo and the `pypi` environment.
+Tests a Python package and builds its sdist and wheel, uploading them as the `dist` artifact. It does **not** publish: PyPI Trusted Publishing checks the `job_workflow_ref` claim, which inside a reusable workflow names this file instead of the caller's, so the `publish` job must stay in the caller's own workflow (the file registered as the Trusted Publisher on PyPI).
 
 **Inputs**
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `package-name` | yes | | PyPI project name |
 | `python-versions` | no | `'["3.11","3.12"]'` | JSON array for the test matrix |
 | `build-python-version` | no | `"3.12"` | Python used to build |
 | `install-command` | no | `pip install -e .[dev]` | Single install command |
 | `test-command` | no | `pytest` | Single test command |
-| `environment` | no | `pypi` | GitHub environment holding the trusted publisher |
 
 ```yaml
 on:
   release:
     types: [published]
 jobs:
-  publish:
-    uses: Specter099/.github/.github/workflows/python-publish.yml@main
+  build:
+    uses: Specter099/.github/.github/workflows/python-build.yml@main
     permissions:
       contents: read
-      id-token: write
-    with:
-      package-name: ssmtree
 ```
+
+Then add a `publish` job in the same caller file (`needs: build`, `environment: pypi`, `permissions: id-token: write`) that downloads the `dist` artifact and runs `pypa/gh-action-pypi-publish`. A complete example is in the header comment of `python-build.yml`.
 
 ### `stale.yml`
 
